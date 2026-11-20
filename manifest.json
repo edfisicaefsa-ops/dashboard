@@ -1,0 +1,19 @@
+{
+  "name": "Gestión Académica EFSA",
+  "short_name": "EFSA Académico",
+  "description": "Sistema mobile-first de gestión académica y calificaciones.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a192f",
+  "theme_color": "#0a192f",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a192f" />
+      <stop offset="55%" stop-color="#172554" />
+      <stop offset="100%" stop-color="#1e3a8a" />
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)" />
+  <rect x="41" y="41" width="430" height="430" fill="none" stroke="#93c5fd" stroke-opacity="0.28" stroke-width="6" />
+  <path d="M256 82 L400 133 L400 266 Q400 379 256 435 Q112 379 112 266 L112 133 Z" fill="url(#shield)" stroke="#93c5fd" stroke-width="9" />
+  <text x="256" y="255" text-anchor="middle" dominant-baseline="middle" fill="#f8fafc" font-family="Segoe UI, system-ui, sans-serif" font-weight="800" font-size="90">EFSA</text>
+  <line x1="174" y1="312" x2="338" y2="312" stroke="#60a5fa" stroke-width="7" />
+  <text x="256" y="348" text-anchor="middle" dominant-baseline="middle" fill="#bfdbfe" font-family="Segoe UI, system-ui, sans-serif" font-weight="600" font-size="25">ACADÉMICO</text>
+</svg>

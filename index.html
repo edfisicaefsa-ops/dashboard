@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a192f" />
+  <title>EFSA · Gestión Académica</title>
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- PANTALLA DE LOGIN -->
+  <section id="login-view" class="login-screen">
+    <div class="login-card">
+      <div class="brand-badge">EFSA</div>
+      <h1>Gestión Académica</h1>
+      <p class="subtitle">Ingresá con tu usuario y contraseña institucional</p>
+
+      <form id="login-form" class="stack-md">
+        <div class="field">
+          <label for="login-usuario">Usuario</label>
+          <input id="login-usuario" name="usuario" type="text" autocomplete="username" required placeholder="Ej. admin" />
+        </div>
+        <div class="field">
+          <label for="login-password">Contraseña</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••" />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-login">Ingresar</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- APLICACIÓN PRINCIPAL -->
+  <div id="app-shell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand-pill">EFSA</span>
+        <div>
+          <div id="topbar-title" class="topbar-title">Panel</div>
+          <div id="topbar-user" class="topbar-sub"></div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button type="button" id="btn-install-pwa" class="btn btn-ghost btn-sm hidden">Instalar</button>
+        <button type="button" id="btn-logout" class="btn btn-danger-outline btn-sm">Salir</button>
+      </div>
+    </header>
+
+    <div id="lock-banner" class="lock-banner hidden">
+      ⚠️ Plataforma cerrada para carga de calificaciones por parte de profesores.
+    </div>
+
+    <main id="main-content" class="main-content"></main>
+
+    <!-- NAVEGACIÓN INFERIOR (ADMIN) -->
+    <nav id="admin-nav" class="bottom-nav hidden" aria-label="Módulos de administración">
+      <button type="button" data-tab="usuarios" class="nav-btn active">Usuarios</button>
+      <button type="button" data-tab="alumnos" class="nav-btn">Alumnos</button>
+      <button type="button" data-tab="asignaciones" class="nav-btn">Asignac.</button>
+      <button type="button" data-tab="aulas" class="nav-btn">Aulas</button>
+      <button type="button" data-tab="materias" class="nav-btn">Materias</button>
+      <button type="button" data-tab="reportes" class="nav-btn">Reportes</button>
+      <button type="button" data-tab="config" class="nav-btn">Config.</button>
+    </nav>
+
+    <!-- NAVEGACIÓN INFERIOR (PROFESOR) -->
+    <nav id="prof-nav" class="bottom-nav prof-nav hidden" aria-label="Vista profesor">
+      <button type="button" data-tab="prof-notas" class="nav-btn active">Mis Cursos y Notas</button>
+    </nav>
+  </div>
+
+  <!-- MODAL GENÉRICO -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="modal-title">Detalle</h3>
+        <button type="button" id="btn-close-modal" class="icon-btn" aria-label="Cerrar">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
