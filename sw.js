@@ -1,4 +1,4 @@
-const CACHE_NAME = 'efsa-academico-v2';
+const CACHE_NAME = 'efsa-academico-v3';
 const STATIC_ASSETS = [
   './',
   './index.html',

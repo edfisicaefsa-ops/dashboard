@@ -5,6 +5,8 @@ const state = {
   session: null,
   bootstrap: null,
   activeTab: null,
+  activeReportSubtab: 'promocionales',
+  selectedMissingGrade: 'P1_N1',
   cache: {
     users: [],
     classrooms: [],
@@ -17,6 +19,7 @@ const state = {
   profSelection: {
     idAula: '',
     idMateria: '',
+    subject: null,
     grades: []
   }
 };
@@ -157,20 +160,19 @@ async function enterApp() {
   state.cache.subjects = boot.subjects || [];
   state.cache.assignments = boot.assignments || [];
 
+  const isAdmin = u.Rol.toLowerCase() === 'admin';
   const isClosed = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI';
   const lockBanner = document.getElementById('lock-banner');
-  if (isClosed && u.Rol.toLowerCase() !== 'admin') {
+  if (isClosed && !isAdmin) {
     lockBanner.classList.remove('hidden');
   } else {
     lockBanner.classList.add('hidden');
   }
 
-  const isAdmin = u.Rol.toLowerCase() === 'admin';
   document.getElementById('admin-nav').classList.toggle('hidden', !isAdmin);
   document.getElementById('prof-nav').classList.toggle('hidden', isAdmin);
 
-  const defaultTab = isAdmin ? 'usuarios' : 'prof-notas';
-  switchTab(defaultTab);
+  switchTab(isAdmin ? 'usuarios' : 'prof-notas');
 }
 
 function switchTab(tabName) {
@@ -181,13 +183,14 @@ function switchTab(tabName) {
 
   const titles = {
     usuarios: '1. Usuarios y Credenciales',
-    alumnos: '2. Alumnos y Cursada',
-    asignaciones: '3. Asignaciones (Aula + Materia)',
-    aulas: '4. Aulas',
-    materias: '5. Materias',
-    reportes: '6. Reportes Académicos',
-    config: '7. Configuración y Blanqueo',
-    'prof-notas': 'Carga de Calificaciones'
+    profesores: '2. Profesores y Aulas Asignadas',
+    alumnos: '3. Alumnos y Cursada',
+    asignaciones: '4. Asignaciones (Aula + Materia)',
+    aulas: '5. Aulas',
+    materias: '6. Materias',
+    'prof-notas': 'Carga de Calificaciones',
+    reportes: '7. Reportes Académicos',
+    config: '8. Configuración y Blanqueo'
   };
   document.getElementById('topbar-title').textContent = titles[tabName] || 'EFSA';
 
@@ -201,13 +204,14 @@ async function renderCurrentTab() {
   try {
     switch (state.activeTab) {
       case 'usuarios': return await renderUsersTab(main);
+      case 'profesores': return await renderProfessorsAdminTab(main);
       case 'alumnos': return await renderStudentsTab(main);
       case 'asignaciones': return await renderAssignmentsTab(main);
       case 'aulas': return await renderClassroomsTab(main);
       case 'materias': return await renderSubjectsTab(main);
+      case 'prof-notas': return await renderGradesTab(main);
       case 'reportes': return await renderReportsTab(main);
       case 'config': return await renderConfigTab(main);
-      case 'prof-notas': return await renderProfessorGradesTab(main);
     }
   } catch (err) {
     main.innerHTML = `<div class="card">Error: ${escapeHtml(err.message)}</div>`;
@@ -215,12 +219,21 @@ async function renderCurrentTab() {
   }
 }
 
+function sortByApellidoNombre(a, b) {
+  const apeA = String(a.Apellido || '').trim().toLowerCase();
+  const apeB = String(b.Apellido || '').trim().toLowerCase();
+  if (apeA !== apeB) return apeA.localeCompare(apeB, 'es');
+  const nomA = String(a.Nombre || '').trim().toLowerCase();
+  const nomB = String(b.Nombre || '').trim().toLowerCase();
+  return nomA.localeCompare(nomB, 'es');
+}
+
 /* =========================================================================
  * 1. USUARIOS
  * ========================================================================= */
 
 async function renderUsersTab(main) {
-  const users = await apiPost('listUsers');
+  const users = (await apiPost('listUsers')).sort(sortByApellidoNombre);
   state.cache.users = users;
 
   main.innerHTML = `
@@ -338,14 +351,81 @@ function openUserForm(user) {
 }
 
 /* =========================================================================
- * 2. ALUMNOS (INCLUYE CAMBIO DE AULA, CARGA MASIVA Y DETALLE DE FINALES)
+ * 2. PROFESORES (VISTA ADMIN: AULAS Y MATERIAS ASIGNADAS)
+ * ========================================================================= */
+
+async function renderProfessorsAdminTab(main) {
+  const [users, assignments, classrooms, subjects] = await Promise.all([
+    apiPost('listUsers'),
+    apiPost('listAssignments'),
+    apiPost('listClassrooms'),
+    apiPost('listSubjects')
+  ]);
+
+  const aulaMap = {};
+  classrooms.forEach(c => { aulaMap[c.ID_Aula] = c; });
+  const matMap = {};
+  subjects.forEach(m => { matMap[m.ID_Materia] = m; });
+
+  const profs = users
+    .filter(u => String(u.Rol || '').toLowerCase() === 'profesor')
+    .sort(sortByApellidoNombre);
+
+  main.innerHTML = `
+    <div class="stack-md">
+      ${profs.map(p => {
+        const myAsg = assignments.filter(a => a.LP_Profesor === p.LP);
+        const aulasUnicas = [...new Set(myAsg.map(a => a.ID_Aula))].map(idAula => {
+          const c = aulaMap[idAula];
+          const materiasDelAula = myAsg
+            .filter(a => a.ID_Aula === idAula)
+            .map(a => (matMap[a.ID_Materia] ? matMap[a.ID_Materia].Nombre_Materia : a.ID_Materia));
+          return {
+            idAula,
+            nombreAula: c ? c.Nombre_Aula : idAula,
+            especialidad: c ? c.Especialidad : '',
+            materias: materiasDelAula
+          };
+        });
+
+        return `
+          <div class="card stack-sm">
+            <div class="row-gap" style="justify-content:space-between">
+              <div>
+                <div class="item-title">${escapeHtml(p.Apellido)}, ${escapeHtml(p.Nombre)} · LP ${escapeHtml(p.LP)}</div>
+                <div class="item-meta">Usuario: ${escapeHtml(p.Usuario)} · ${aulasUnicas.length} aula(s) asignada(s)</div>
+              </div>
+              <span class="badge ${p.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${p.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
+            </div>
+            ${aulasUnicas.length > 0 ? `
+              <div class="stack-sm" style="margin-top:8px;">
+                ${aulasUnicas.map(au => `
+                  <div class="list-item" style="background: var(--bg);">
+                    <div class="item-main">
+                      <div class="item-title">Aula ${escapeHtml(au.nombreAula)} ${au.especialidad ? `(${escapeHtml(au.especialidad)})` : ''}</div>
+                      <div class="item-meta">Materias: ${escapeHtml(au.materias.join(', '))}</div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : '<div class="item-meta">Sin aulas asignadas actualmente.</div>'}
+          </div>
+        `;
+      }).join('') || '<div class="card">No hay profesores registrados.</div>'}
+    </div>
+  `;
+}
+
+/* =========================================================================
+ * 3. ALUMNOS (ORDEN ALFABÉTICO + TODAS LAS NOTAS EN EL DETALLE)
  * ========================================================================= */
 
 async function renderStudentsTab(main) {
-  const [students, classrooms] = await Promise.all([
+  const [studentsRaw, classrooms] = await Promise.all([
     apiPost('listStudents'),
     apiPost('listClassrooms')
   ]);
+  const students = studentsRaw.slice().sort(sortByApellidoNombre);
   state.cache.students = students;
   state.cache.classrooms = classrooms;
 
@@ -358,7 +438,7 @@ async function renderStudentsTab(main) {
         <button type="button" class="btn btn-primary" id="btn-new-student">+ Nuevo Aspirante</button>
         <button type="button" class="btn btn-secondary" id="btn-bulk-student">Carga Masiva</button>
         <div class="field">
-          <input id="filter-student-aula" type="text" placeholder="Filtrar por aula o LP/Apellido..." />
+          <input id="filter-student-aula" type="text" placeholder="Filtrar por aula, LP o apellido..." />
         </div>
       </div>
 
@@ -378,7 +458,7 @@ async function renderStudentsTab(main) {
         nomAula.includes(q) ||
         s.Especialidad.toLowerCase().includes(q)
       );
-    });
+    }).sort(sortByApellidoNombre);
 
     const container = document.getElementById('students-list');
     container.innerHTML = list.map(s => {
@@ -505,7 +585,7 @@ function openStudentForm(student) {
 }
 
 async function openStudentDetail(lp) {
-  openModal('Situación Académica del Aspirante', '<div class="card">Consultando materias y finales...</div>');
+  openModal('Detalle de Calificaciones del Aspirante', '<div class="card">Consultando todas las notas...</div>');
   try {
     const info = await apiPost('getStudentAcademicDetail', { LP: lp });
     const st = info.student;
@@ -526,6 +606,8 @@ async function openStudentDetail(lp) {
          </div>`
       : '';
 
+    const fmt = v => (v === '' || v === null || v === undefined ? '-' : v);
+
     openModal(`${st.Apellido}, ${st.Nombre} · LP ${st.LP}`, `
       <div class="stack-md">
         <div class="card">
@@ -538,21 +620,31 @@ async function openStudentDetail(lp) {
             <thead>
               <tr>
                 <th>Materia</th>
-                <th>Rég.</th>
-                <th>Prom.</th>
-                <th>P1</th>
-                <th>P2</th>
+                <th>P1 N1</th>
+                <th>P1 N2</th>
+                <th>P1 Rec</th>
+                <th>Prom P1</th>
+                <th>P2 N1</th>
+                <th>P2 N2</th>
+                <th>P2 Rec</th>
+                <th>Prom P2</th>
+                <th>Prom Gral</th>
                 <th>Estado</th>
               </tr>
             </thead>
             <tbody>
               ${info.subjects.map(sub => `
                 <tr>
-                  <td>${escapeHtml(sub.Nombre_Materia)}</td>
-                  <td>${escapeHtml(sub.Regimen)}</td>
-                  <td>${escapeHtml(sub.Promocional)}</td>
-                  <td>${sub.Prom_P1 === '' ? '-' : sub.Prom_P1}</td>
-                  <td>${sub.Prom_P2 === '' ? '-' : sub.Prom_P2}</td>
+                  <td><strong>${escapeHtml(sub.Nombre_Materia)}</strong></td>
+                  <td>${fmt(sub.P1_N1)}</td>
+                  <td>${fmt(sub.P1_N2)}</td>
+                  <td>${fmt(sub.P1_Rec)}</td>
+                  <td><strong>${fmt(sub.Prom_P1)}</strong></td>
+                  <td>${fmt(sub.P2_N1)}</td>
+                  <td>${fmt(sub.P2_N2)}</td>
+                  <td>${fmt(sub.P2_Rec)}</td>
+                  <td><strong>${fmt(sub.Prom_P2)}</strong></td>
+                  <td><strong>${fmt(sub.Prom_Final)}</strong></td>
                   <td><span class="badge ${sub.requiereFinal ? 'badge-warn' : 'badge-ok'}">${escapeHtml(sub.estado)}</span></td>
                 </tr>
               `).join('')}
@@ -606,7 +698,7 @@ function openBulkStudentsModal() {
 }
 
 /* =========================================================================
- * 3. ASIGNACIONES
+ * 4. ASIGNACIONES
  * ========================================================================= */
 
 async function renderAssignmentsTab(main) {
@@ -621,7 +713,7 @@ async function renderAssignmentsTab(main) {
   state.cache.classrooms = classrooms;
   state.cache.subjects = subjects;
 
-  const profs = users.filter(u => u.Rol.toLowerCase() === 'profesor');
+  const profs = users.filter(u => u.Rol.toLowerCase() === 'profesor').sort(sortByApellidoNombre);
   const profMap = {};
   users.forEach(u => { profMap[u.LP] = `${u.Apellido}, ${u.Nombre}`; });
   const aulaMap = {};
@@ -711,7 +803,7 @@ async function renderAssignmentsTab(main) {
 }
 
 /* =========================================================================
- * 4. AULAS
+ * 5. AULAS (ID AUTOGENERADO, SIN CAMPO MANUAL)
  * ========================================================================= */
 
 async function renderClassroomsTab(main) {
@@ -751,10 +843,6 @@ function openClassroomForm(aula) {
   const isEdit = Boolean(aula);
   openModal(isEdit ? `Editar Aula (${aula.Nombre_Aula})` : 'Nueva Aula', `
     <form id="aula-form" class="stack-md">
-      <div class="field">
-        <label>ID_Aula (opcional, se autogenera si queda vacío)</label>
-        <input name="ID_Aula" value="${escapeAttr(aula ? aula.ID_Aula : '')}" placeholder="Ej. AUL-01" />
-      </div>
       <div class="field">
         <label>Nombre_Aula</label>
         <input name="Nombre_Aula" required value="${escapeAttr(aula ? aula.Nombre_Aula : '')}" placeholder="Ej. 101" />
@@ -812,7 +900,7 @@ function openClassroomForm(aula) {
 }
 
 /* =========================================================================
- * 5. MATERIAS
+ * 6. MATERIAS (ID AUTOGENERADO, SIN CAMPO MANUAL)
  * ========================================================================= */
 
 async function renderSubjectsTab(main) {
@@ -855,10 +943,6 @@ function openSubjectForm(mat) {
   const isEdit = Boolean(mat);
   openModal(isEdit ? `Editar Materia (${mat.Nombre_Materia})` : 'Nueva Materia', `
     <form id="mat-form" class="stack-md">
-      <div class="field">
-        <label>ID_Materia (opcional)</label>
-        <input name="ID_Materia" value="${escapeAttr(mat ? mat.ID_Materia : '')}" placeholder="Ej. MAT-01" />
-      </div>
       <div class="field">
         <label>Nombre_Materia</label>
         <input name="Nombre_Materia" required value="${escapeAttr(mat ? mat.Nombre_Materia : '')}" />
@@ -945,124 +1029,450 @@ function openSubjectForm(mat) {
 }
 
 /* =========================================================================
- * 6. REPORTES (PROMOCIONALES A FINAL CON AULA Y MATERIA)
+ * CARGA DE CALIFICACIONES (ADMIN Y PROFESOR · PROMEDIOS EN VIVO)
  * ========================================================================= */
 
-async function renderReportsTab(main) {
-  const classrooms = await apiPost('listClassrooms');
-  state.cache.classrooms = classrooms;
+function round3Client(num) {
+  return Math.round(Number(num) * 1000) / 1000;
+}
+
+function parseGradeClient(val) {
+  if (val === '' || val === null || val === undefined) return null;
+  const s = String(val).trim().replace(',', '.');
+  if (s === '') return null;
+  const n = Number(s);
+  if (isNaN(n) || n < 1 || n > 10) return null;
+  return round3Client(n);
+}
+
+function computeLiveRow(raw, subject, cfg) {
+  const minProm = Number(cfg.Nota_Minima_Aprobacion || 6);
+  const minParcial = Number(cfg.Parcial_Minimo_Promocion || 4);
+  const esPromocional = String(subject ? subject.Promocional : 'SI').toUpperCase() === 'SI';
+
+  const p1n1 = parseGradeClient(raw.P1_N1);
+  const p1n2 = parseGradeClient(raw.P1_N2);
+  const p1rec = parseGradeClient(raw.P1_Rec);
+
+  const p2n1 = parseGradeClient(raw.P2_N1);
+  const p2n2 = parseGradeClient(raw.P2_N2);
+  const p2rec = parseGradeClient(raw.P2_Rec);
+
+  let promP1 = '';
+  const p1Vals = [p1n1, p1n2].filter(v => v !== null);
+  if (p1rec !== null && p1Vals.length > 0) {
+    const minIdx = p1n1 !== null && p1n2 !== null ? (p1n1 <= p1n2 ? 0 : 1) : 0;
+    const base = p1Vals.slice();
+    if (p1rec > base[minIdx]) base[minIdx] = p1rec;
+    promP1 = round3Client(base.reduce((a, b) => a + b, 0) / base.length);
+  } else if (p1rec !== null) {
+    promP1 = round3Client(p1rec);
+  } else if (p1Vals.length > 0) {
+    promP1 = round3Client(p1Vals.reduce((a, b) => a + b, 0) / p1Vals.length);
+  }
+
+  let promP2 = '';
+  const p2Vals = [p2n1, p2n2].filter(v => v !== null);
+  if (p2rec !== null && p2Vals.length > 0) {
+    const minIdx = p2n1 !== null && p2n2 !== null ? (p2n1 <= p2n2 ? 0 : 1) : 0;
+    const base = p2Vals.slice();
+    if (p2rec > base[minIdx]) base[minIdx] = p2rec;
+    promP2 = round3Client(base.reduce((a, b) => a + b, 0) / base.length);
+  } else if (p2rec !== null) {
+    promP2 = round3Client(p2rec);
+  } else if (p2Vals.length > 0) {
+    promP2 = round3Client(p2Vals.reduce((a, b) => a + b, 0) / p2Vals.length);
+  }
+
+  let promFinal = '';
+  if (promP1 !== '' && promP2 !== '') {
+    promFinal = round3Client((Number(promP1) + Number(promP2)) / 2);
+  } else if (promP1 !== '') {
+    promFinal = round3Client(promP1);
+  } else if (promP2 !== '') {
+    promFinal = round3Client(promP2);
+  }
+
+  let condicion = 'Cursando';
+  if (!esPromocional) {
+    condicion = 'Final Obligatorio';
+  } else if (promP1 !== '' && promP2 !== '') {
+    if (Number(promP1) < minParcial || Number(promP2) < minParcial || Number(promFinal) < minProm) {
+      condicion = 'Va a Final';
+    } else {
+      condicion = 'Promocionado';
+    }
+  }
+
+  return { promP1, promP2, promFinal, condicion };
+}
+
+async function renderGradesTab(main) {
+  const isAdmin = state.session.Rol.toLowerCase() === 'admin';
+  const isLocked = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI' && !isAdmin;
+
+  let optionsHtml = '';
+  if (isAdmin) {
+    const [classrooms, subjects] = await Promise.all([
+      apiPost('listClassrooms'),
+      apiPost('listSubjects')
+    ]);
+    state.cache.classrooms = classrooms;
+    state.cache.subjects = subjects;
+
+    const pairs = [];
+    classrooms.forEach(c => {
+      if (String(c.Activa || 'SI').toUpperCase() !== 'SI') return;
+      subjects.forEach(m => {
+        if (String(m.Activa || 'SI').toUpperCase() !== 'SI') return;
+        pairs.push({
+          idAula: c.ID_Aula,
+          idMateria: m.ID_Materia,
+          label: `Aula ${c.Nombre_Aula} (${c.Especialidad}) — ${m.Nombre_Materia}`
+        });
+      });
+    });
+
+    optionsHtml = pairs.map(p => `
+      <option value="${escapeAttr(p.idAula)}::${escapeAttr(p.idMateria)}">${escapeHtml(p.label)}</option>
+    `).join('');
+  } else {
+    const assignments = state.cache.assignments || [];
+    const classrooms = state.cache.classrooms || [];
+    const subjects = state.cache.subjects || [];
+    const aulaMap = {};
+    classrooms.forEach(c => { aulaMap[c.ID_Aula] = c.Nombre_Aula; });
+    const matMap = {};
+    subjects.forEach(m => { matMap[m.ID_Materia] = m.Nombre_Materia; });
+
+    optionsHtml = assignments.map(a => `
+      <option value="${escapeAttr(a.ID_Aula)}::${escapeAttr(a.ID_Materia)}">
+        Aula ${escapeHtml(aulaMap[a.ID_Aula] || a.ID_Aula)} — ${escapeHtml(matMap[a.ID_Materia] || a.ID_Materia)}
+      </option>
+    `).join('');
+  }
 
   main.innerHTML = `
     <div class="stack-md">
       <div class="card stack-md">
-        <div class="card-title">Filtros de Reporte</div>
-        <div class="row-gap">
-          <div class="field">
-            <label>Aula</label>
-            <select id="rep-aula">
-              <option value="">Todas las aulas</option>
-              ${classrooms.map(c => `<option value="${escapeAttr(c.ID_Aula)}">${escapeHtml(c.Nombre_Aula)} (${escapeHtml(c.Especialidad)})</option>`).join('')}
-            </select>
-          </div>
-          <div class="field">
-            <label>Especialidad</label>
-            <select id="rep-esp">
-              <option value="">Todas</option>
-              <option value="Seguridad">Seguridad</option>
-              <option value="Bomberos">Bomberos</option>
-              <option value="Comunicaciones">Comunicaciones</option>
-            </select>
-          </div>
+        <div class="card-title">${isAdmin ? 'Seleccionar Aula y Materia (Acceso Admin)' : 'Seleccionar Curso Asignado'}</div>
+        <div class="field">
+          <label>Aula + Materia</label>
+          <select id="prof-assignment-select">
+            <option value="">Elegir...</option>
+            ${optionsHtml}
+          </select>
         </div>
-        <button type="button" class="btn btn-primary" id="btn-run-report">Generar Reporte</button>
       </div>
-
-      <div id="report-output" class="stack-md"></div>
+      <div id="prof-grades-sheet"></div>
     </div>
   `;
 
-  const runReport = async () => {
-    const out = document.getElementById('report-output');
-    out.innerHTML = '<div class="card">Calculando reporte...</div>';
-    const data = await apiPost('getReports', {
-      ID_Aula: document.getElementById('rep-aula').value,
-      Especialidad: document.getElementById('rep-esp').value
-    });
-    state.cache.reports = data;
+  const sel = document.getElementById('prof-assignment-select');
+  sel.addEventListener('change', async () => {
+    const val = sel.value;
+    const container = document.getElementById('prof-grades-sheet');
+    if (!val) {
+      container.innerHTML = '';
+      return;
+    }
+    const [idAula, idMateria] = val.split('::');
+    const subjectObj = (state.cache.subjects || []).find(m => m.ID_Materia === idMateria) || { Promocional: 'SI' };
+    container.innerHTML = '<div class="card">Cargando planilla de alumnos...</div>';
 
-    const pf = data.promocionalesAFinal || [];
-    const ra = data.resumenAulas || [];
+    try {
+      const rows = (await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria }))
+        .sort((a, b) => sortByApellidoNombre({ Apellido: a.Apellido, Nombre: a.Nombre }, { Apellido: b.Apellido, Nombre: b.Nombre }));
+      state.profSelection = { idAula, idMateria, subject: subjectObj, grades: rows };
 
-    out.innerHTML = `
-      <div class="card">
-        <div class="card-title">Aspirantes que van a Final en Materias Promocionales (${pf.length})</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>LP</th>
-                <th>Aspirante</th>
-                <th>Aula</th>
-                <th>Materia Promocional</th>
-                <th>P1 / P2</th>
-                <th>Motivo</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${pf.map(r => `
+      container.innerHTML = `
+        <div class="card stack-md">
+          <div class="row-gap" style="justify-content:space-between">
+            <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos)</div>
+            <button type="button" class="btn btn-success btn-sm" id="btn-save-all-grades" ${isLocked ? 'disabled' : ''}>
+              Guardar Todo
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
                 <tr>
-                  <td>${escapeHtml(r.LP)}</td>
-                  <td>${escapeHtml(r.Apellido)}, ${escapeHtml(r.Nombre)}</td>
-                  <td><strong>${escapeHtml(r.Nombre_Aula)}</strong></td>
-                  <td><strong>${escapeHtml(r.Nombre_Materia)}</strong></td>
-                  <td>${r.Prom_P1 === '' ? '-' : r.Prom_P1} / ${r.Prom_P2 === '' ? '-' : r.Prom_P2}</td>
-                  <td>${escapeHtml(r.Motivo)}</td>
+                  <th>LP</th>
+                  <th>Alumno</th>
+                  <th>P1 N1</th>
+                  <th>P1 N2</th>
+                  <th>P1 Rec</th>
+                  <th>Prom P1</th>
+                  <th>P2 N1</th>
+                  <th>P2 N2</th>
+                  <th>P2 Rec</th>
+                  <th>Prom P2</th>
+                  <th>Prom Gral</th>
+                  <th>Condición</th>
                 </tr>
-              `).join('') || '<tr><td colspan="6">No hay aspirantes en materias promocionales a final con estos filtros.</td></tr>'}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                ${rows.map((r, idx) => `
+                  <tr data-row-idx="${idx}">
+                    <td>${escapeHtml(r.LP_Alumno)}</td>
+                    <td>${escapeHtml(r.Apellido)}, ${escapeHtml(r.Nombre)}</td>
+                    <td><input class="grade-input" data-f="P1_N1" value="${escapeAttr(r.P1_N1)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td><input class="grade-input" data-f="P1_N2" value="${escapeAttr(r.P1_N2)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td><input class="grade-input" data-f="P1_Rec" value="${escapeAttr(r.P1_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td class="cell-p1"><strong>${r.Prom_P1 === '' ? '-' : r.Prom_P1}</strong></td>
+                    <td><input class="grade-input" data-f="P2_N1" value="${escapeAttr(r.P2_N1)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td><input class="grade-input" data-f="P2_N2" value="${escapeAttr(r.P2_N2)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td><input class="grade-input" data-f="P2_Rec" value="${escapeAttr(r.P2_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
+                    <td class="cell-p2"><strong>${r.Prom_P2 === '' ? '-' : r.Prom_P2}</strong></td>
+                    <td class="cell-pf"><strong>${r.Prom_Final === '' ? '-' : r.Prom_Final}</strong></td>
+                    <td class="cell-cond"><span class="badge badge-info">${escapeHtml(r.Condicion)}</span></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      `;
 
-      <div class="card">
-        <div class="card-title">Resumen por Aula</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Aula</th>
-                <th>Especialidad</th>
-                <th>Activos</th>
-                <th>Promoc. a Final</th>
-                <th>Prom. Gral.</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${ra.map(a => `
-                <tr>
-                  <td>${escapeHtml(a.Nombre_Aula)}</td>
-                  <td>${escapeHtml(a.Especialidad)}</td>
-                  <td>${a.alumnosActivos}</td>
-                  <td>${a.promocionalesAFinalCount}</td>
-                  <td>${a.promedioGeneral === '' ? '-' : a.promedioGeneral}</td>
-                </tr>
-              `).join('') || '<tr><td colspan="5">Sin datos.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-  };
+      const recalcRow = tr => {
+        const raw = {};
+        tr.querySelectorAll('input.grade-input').forEach(inp => {
+          raw[inp.dataset.f] = inp.value;
+        });
+        const live = computeLiveRow(raw, subjectObj, state.cache.config || {});
+        tr.querySelector('.cell-p1').innerHTML = `<strong>${live.promP1 === '' ? '-' : live.promP1}</strong>`;
+        tr.querySelector('.cell-p2').innerHTML = `<strong>${live.promP2 === '' ? '-' : live.promP2}</strong>`;
+        tr.querySelector('.cell-pf').innerHTML = `<strong>${live.promFinal === '' ? '-' : live.promFinal}</strong>`;
+        tr.querySelector('.cell-cond').innerHTML = `<span class="badge badge-info">${escapeHtml(live.condicion)}</span>`;
+      };
 
-  document.getElementById('btn-run-report').addEventListener('click', () => {
-    runReport().catch(err => showToast(err.message, 'error'));
+      container.querySelectorAll('tbody tr').forEach(tr => {
+        recalcRow(tr);
+        tr.querySelectorAll('input.grade-input').forEach(inp => {
+          inp.addEventListener('input', () => recalcRow(tr));
+        });
+      });
+
+      document.getElementById('btn-save-all-grades').addEventListener('click', async () => {
+        const items = [];
+        container.querySelectorAll('tbody tr').forEach((tr, i) => {
+          const item = { LP_Alumno: rows[i].LP_Alumno };
+          tr.querySelectorAll('input.grade-input').forEach(inp => {
+            item[inp.dataset.f] = inp.value.trim();
+          });
+          items.push(item);
+        });
+
+        try {
+          const res = await apiPost('saveGradesBatch', { ID_Materia: idMateria, items });
+          showToast(`Calificaciones guardadas (${res.count} registros).`, 'success');
+          sel.dispatchEvent(new Event('change'));
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      });
+    } catch (err) {
+      container.innerHTML = `<div class="card">Error: ${escapeHtml(err.message)}</div>`;
+    }
   });
-
-  await runReport();
 }
 
 /* =========================================================================
- * 7. CONFIGURACIÓN Y BLANQUEO ANUAL
+ * 7. REPORTES (SUBPESTAÑAS + EXPORTACIÓN EXCEL Y PDF)
+ * ========================================================================= */
+
+async function renderReportsTab(main) {
+  main.innerHTML = `
+    <div class="stack-md">
+      <div class="subtabs" id="report-subtabs">
+        <button type="button" class="subtab-btn ${state.activeReportSubtab === 'promocionales' ? 'active' : ''}" data-rsub="promocionales">Promocionales a Final</button>
+        <button type="button" class="subtab-btn ${state.activeReportSubtab === 'merito' ? 'active' : ''}" data-rsub="merito">Orden de Mérito</button>
+        <button type="button" class="subtab-btn ${state.activeReportSubtab === 'dragoneantes' ? 'active' : ''}" data-rsub="dragoneantes">Dragoneantes</button>
+        <button type="button" class="subtab-btn ${state.activeReportSubtab === 'faltantes' ? 'active' : ''}" data-rsub="faltantes">Notas Faltantes</button>
+      </div>
+      <div id="report-output" class="stack-md"><div class="card">Calculando reporte...</div></div>
+    </div>
+  `;
+
+  const data = await apiPost('getReports', {});
+  state.cache.reports = data;
+
+  const paintSubtab = () => {
+    document.querySelectorAll('#report-subtabs .subtab-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.rsub === state.activeReportSubtab);
+    });
+    const out = document.getElementById('report-output');
+
+    if (state.activeReportSubtab === 'promocionales') {
+      const list = data.promocionalesAFinal || [];
+      const headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Prom P1', 'Prom P2', 'Motivo'];
+      const rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Prom_P1 || '-', r.Prom_P2 || '-', r.Motivo]);
+      out.innerHTML = renderExportCard('Promocionales a Final', headers, rows) + renderSimpleTable(headers, rows, 'No hay aspirantes en materias promocionales a final.');
+    }
+
+    if (state.activeReportSubtab === 'merito') {
+      const list = data.ordenMerito || [];
+      const headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio General', 'Materias'];
+      const rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_General, r.Materias_Evaluadas]);
+      out.innerHTML = renderExportCard('Orden de Mérito', headers, rows) + renderSimpleTable(headers, rows, 'Sin datos de promedio general para ordenar.');
+    }
+
+    if (state.activeReportSubtab === 'dragoneantes') {
+      const list = data.dragoneantes || [];
+      const headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio 1er Período', 'Materias P1'];
+      const rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_P1, r.Materias_P1]);
+      out.innerHTML = renderExportCard('Dragoneantes (1er Período)', headers, rows) + renderSimpleTable(headers, rows, 'Sin datos del 1er período para ordenar.');
+    }
+
+    if (state.activeReportSubtab === 'faltantes') {
+      const mapLabels = {
+        P1_N1: '1ª Nota del 1er Período',
+        P1_N2: '2ª Nota del 1er Período',
+        P2_N1: '1ª Nota del 2do Período',
+        P2_N2: '2ª Nota del 2do Período'
+      };
+      const selectedField = state.selectedMissingGrade || 'P1_N1';
+      const list = (data.faltantesPorNota && data.faltantesPorNota[selectedField]) || [];
+      const headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
+      const rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
+
+      out.innerHTML = `
+        <div class="card stack-md">
+          <div class="field">
+            <label>Elegir nota a controlar</label>
+            <select id="select-missing-grade">
+              <option value="P1_N1" ${selectedField === 'P1_N1' ? 'selected' : ''}>1ª Nota del 1er Período</option>
+              <option value="P1_N2" ${selectedField === 'P1_N2' ? 'selected' : ''}>2ª Nota del 1er Período</option>
+              <option value="P2_N1" ${selectedField === 'P2_N1' ? 'selected' : ''}>1ª Nota del 2do Período</option>
+              <option value="P2_N2" ${selectedField === 'P2_N2' ? 'selected' : ''}>2ª Nota del 2do Período</option>
+            </select>
+          </div>
+          <div class="row-gap">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-excel">Exportar Excel</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-pdf">Exportar PDF</button>
+          </div>
+        </div>
+        ${renderSimpleTable(headers, rows, 'A ningún aspirante le falta esta nota.')}
+      `;
+
+      document.getElementById('select-missing-grade').addEventListener('change', e => {
+        state.selectedMissingGrade = e.target.value;
+        paintSubtab();
+      });
+      bindExportButtons(`Faltantes_${selectedField}`, mapLabels[selectedField], headers, rows);
+      return;
+    }
+
+    bindExportButtons(`Reporte_${state.activeReportSubtab}`, document.querySelector('#report-subtabs .subtab-btn.active').textContent, headers, rows);
+  };
+
+  document.querySelectorAll('#report-subtabs .subtab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.activeReportSubtab = btn.dataset.rsub;
+      paintSubtab();
+    });
+  });
+
+  paintSubtab();
+}
+
+function renderExportCard(title, headers, rows) {
+  return `
+    <div class="card">
+      <div class="row-gap" style="justify-content:space-between">
+        <div class="card-title" style="margin:0">${escapeHtml(title)} (${rows.length})</div>
+        <div class="row-gap">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-excel">Exportar Excel</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-pdf">Exportar PDF</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSimpleTable(headers, rows, emptyMsg) {
+  return `
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>
+            `).join('') || `<tr><td colspan="${headers.length}">${escapeHtml(emptyMsg)}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function bindExportButtons(fileBaseName, reportTitle, headers, rows) {
+  const excelBtn = document.getElementById('btn-exp-excel');
+  if (excelBtn) {
+    excelBtn.addEventListener('click', () => {
+      const tableHtml = `
+        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+        <head><meta charset="UTF-8" /></head>
+        <body>
+          <table border="1">
+            <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+          </table>
+        </body>
+        </html>
+      `;
+      const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${fileBaseName}.xls`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  const pdfBtn = document.getElementById('btn-exp-pdf');
+  if (pdfBtn) {
+    pdfBtn.addEventListener('click', () => {
+      const win = window.open('', '_blank');
+      if (!win) {
+        showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
+        return;
+      }
+      win.document.write(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="UTF-8" />
+          <title>${escapeHtml(reportTitle)}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; color: #0f172a; }
+            h2 { margin-top: 0; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
+            th { background: #f1f5f9; }
+          </style>
+        </head>
+        <body>
+          <h2>${escapeHtml(reportTitle)}</h2>
+          <table>
+            <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+          </table>
+          <script>window.onload = function() { window.print(); };<\/script>
+        </body>
+        </html>
+      `);
+      win.document.close();
+    });
+  }
+}
+
+/* =========================================================================
+ * 8. CONFIGURACIÓN Y BLANQUEO ANUAL
  * ========================================================================= */
 
 async function renderConfigTab(main) {
@@ -1134,131 +1544,6 @@ async function renderConfigTab(main) {
       showToast('Blanqueo anual ejecutado con éxito.', 'success');
     } catch (err) {
       showToast(err.message, 'error');
-    }
-  });
-}
-
-/* =========================================================================
- * VISTA PROFESOR · CARGA DE CALIFICACIONES
- * ========================================================================= */
-
-async function renderProfessorGradesTab(main) {
-  const assignments = state.cache.assignments || [];
-  const classrooms = state.cache.classrooms || [];
-  const subjects = state.cache.subjects || [];
-
-  const aulaMap = {};
-  classrooms.forEach(c => { aulaMap[c.ID_Aula] = c.Nombre_Aula; });
-  const matMap = {};
-  subjects.forEach(m => { matMap[m.ID_Materia] = m.Nombre_Materia; });
-
-  const isLocked = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI'
-    && state.session.Rol.toLowerCase() !== 'admin';
-
-  main.innerHTML = `
-    <div class="stack-md">
-      <div class="card stack-md">
-        <div class="card-title">Seleccionar Curso Asignado</div>
-        <div class="field">
-          <label>Aula + Materia</label>
-          <select id="prof-assignment-select">
-            <option value="">Elegir...</option>
-            ${assignments.map(a => `
-              <option value="${escapeAttr(a.ID_Aula)}::${escapeAttr(a.ID_Materia)}">
-                Aula ${escapeHtml(aulaMap[a.ID_Aula] || a.ID_Aula)} — ${escapeHtml(matMap[a.ID_Materia] || a.ID_Materia)}
-              </option>
-            `).join('')}
-          </select>
-        </div>
-      </div>
-      <div id="prof-grades-sheet"></div>
-    </div>
-  `;
-
-  const sel = document.getElementById('prof-assignment-select');
-  sel.addEventListener('change', async () => {
-    const val = sel.value;
-    const container = document.getElementById('prof-grades-sheet');
-    if (!val) {
-      container.innerHTML = '';
-      return;
-    }
-    const [idAula, idMateria] = val.split('::');
-    container.innerHTML = '<div class="card">Cargando planilla de alumnos...</div>';
-
-    try {
-      const rows = await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria });
-      state.profSelection = { idAula, idMateria, grades: rows };
-
-      container.innerHTML = `
-        <div class="card stack-md">
-          <div class="row-gap" style="justify-content:space-between">
-            <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos activos)</div>
-            <button type="button" class="btn btn-success btn-sm" id="btn-save-all-grades" ${isLocked ? 'disabled' : ''}>
-              Guardar Todo
-            </button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>LP</th>
-                  <th>Alumno</th>
-                  <th>P1 N1</th>
-                  <th>P1 N2</th>
-                  <th>P1 Rec</th>
-                  <th>Prom P1</th>
-                  <th>P2 N1</th>
-                  <th>P2 N2</th>
-                  <th>P2 Rec</th>
-                  <th>Prom P2</th>
-                  <th>Prom Gral</th>
-                  <th>Condición</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rows.map((r, idx) => `
-                  <tr data-row-idx="${idx}">
-                    <td>${escapeHtml(r.LP_Alumno)}</td>
-                    <td>${escapeHtml(r.Apellido)}, ${escapeHtml(r.Nombre)}</td>
-                    <td><input class="grade-input" data-f="P1_N1" value="${escapeAttr(r.P1_N1)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P1_N2" value="${escapeAttr(r.P1_N2)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P1_Rec" value="${escapeAttr(r.P1_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td class="cell-p1">${r.Prom_P1 === '' ? '-' : r.Prom_P1}</td>
-                    <td><input class="grade-input" data-f="P2_N1" value="${escapeAttr(r.P2_N1)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P2_N2" value="${escapeAttr(r.P2_N2)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P2_Rec" value="${escapeAttr(r.P2_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td class="cell-p2">${r.Prom_P2 === '' ? '-' : r.Prom_P2}</td>
-                    <td class="cell-pf">${r.Prom_Final === '' ? '-' : r.Prom_Final}</td>
-                    <td class="cell-cond"><span class="badge badge-info">${escapeHtml(r.Condicion)}</span></td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `;
-
-      document.getElementById('btn-save-all-grades').addEventListener('click', async () => {
-        const items = [];
-        container.querySelectorAll('tbody tr').forEach((tr, i) => {
-          const item = { LP_Alumno: rows[i].LP_Alumno };
-          tr.querySelectorAll('input.grade-input').forEach(inp => {
-            item[inp.dataset.f] = inp.value.trim();
-          });
-          items.push(item);
-        });
-
-        try {
-          const res = await apiPost('saveGradesBatch', { ID_Materia: idMateria, items });
-          showToast(`Calificaciones guardadas (${res.count} registros).`, 'success');
-          sel.dispatchEvent(new Event('change'));
-        } catch (err) {
-          showToast(err.message, 'error');
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<div class="card">Error: ${escapeHtml(err.message)}</div>`;
     }
   });
 }
