@@ -1302,26 +1302,33 @@ async function renderReportsTab(main) {
       b.classList.toggle('active', b.dataset.rsub === state.activeReportSubtab);
     });
     const out = document.getElementById('report-output');
+    let headers = [];
+    let rows = [];
+    let fileBaseName = `Reporte_${state.activeReportSubtab}`;
+    let reportTitle = '';
 
     if (state.activeReportSubtab === 'promocionales') {
       const list = data.promocionalesAFinal || [];
-      const headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Prom P1', 'Prom P2', 'Motivo'];
-      const rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Prom_P1 || '-', r.Prom_P2 || '-', r.Motivo]);
-      out.innerHTML = renderExportCard('Promocionales a Final', headers, rows) + renderSimpleTable(headers, rows, 'No hay aspirantes en materias promocionales a final.');
+      reportTitle = 'Promocionales a Final';
+      headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Prom P1', 'Prom P2', 'Motivo'];
+      rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Prom_P1 || '-', r.Prom_P2 || '-', r.Motivo]);
+      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'No hay aspirantes en materias promocionales a final.');
     }
 
     if (state.activeReportSubtab === 'merito') {
       const list = data.ordenMerito || [];
-      const headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio General', 'Materias'];
-      const rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_General, r.Materias_Evaluadas]);
-      out.innerHTML = renderExportCard('Orden de Mérito', headers, rows) + renderSimpleTable(headers, rows, 'Sin datos de promedio general para ordenar.');
+      reportTitle = 'Orden de Mérito';
+      headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio General', 'Materias'];
+      rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_General, r.Materias_Evaluadas]);
+      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'Sin datos de promedio general para ordenar.');
     }
 
     if (state.activeReportSubtab === 'dragoneantes') {
       const list = data.dragoneantes || [];
-      const headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio 1er Período', 'Materias P1'];
-      const rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_P1, r.Materias_P1]);
-      out.innerHTML = renderExportCard('Dragoneantes (1er Período)', headers, rows) + renderSimpleTable(headers, rows, 'Sin datos del 1er período para ordenar.');
+      reportTitle = 'Dragoneantes (1er Período)';
+      headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio 1er Período', 'Materias P1'];
+      rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_P1, r.Materias_P1]);
+      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'Sin datos del 1er período para ordenar.');
     }
 
     if (state.activeReportSubtab === 'faltantes') {
@@ -1333,8 +1340,10 @@ async function renderReportsTab(main) {
       };
       const selectedField = state.selectedMissingGrade || 'P1_N1';
       const list = (data.faltantesPorNota && data.faltantesPorNota[selectedField]) || [];
-      const headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
-      const rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
+      fileBaseName = `Faltantes_${selectedField}`;
+      reportTitle = `Notas Faltantes - ${mapLabels[selectedField]}`;
+      headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
+      rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
 
       out.innerHTML = `
         <div class="card stack-md">
@@ -1359,11 +1368,11 @@ async function renderReportsTab(main) {
         state.selectedMissingGrade = e.target.value;
         paintSubtab();
       });
-      bindExportButtons(`Faltantes_${selectedField}`, mapLabels[selectedField], headers, rows);
+      bindExportButtons(fileBaseName, reportTitle, headers, rows);
       return;
     }
 
-    bindExportButtons(`Reporte_${state.activeReportSubtab}`, document.querySelector('#report-subtabs .subtab-btn.active').textContent, headers, rows);
+    bindExportButtons(fileBaseName, reportTitle, headers, rows);
   };
 
   document.querySelectorAll('#report-subtabs .subtab-btn').forEach(btn => {
