@@ -1,4 +1,4 @@
-const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4XSYoZFUrvr3EIjZZlRLK_N8KNZKmeQNH6ceK_FYBEJwD/exec';
+const API_URL = 'TU_URL_DE_APPS_SCRIPT_EXEC';
 const SESSION_KEY = 'efsa_session_v1';
 
 const state = {
@@ -20,6 +20,7 @@ const state = {
     idAula: '',
     idMateria: '',
     subject: null,
+    meta: null,
     grades: []
   }
 };
@@ -27,27 +28,87 @@ const state = {
 let deferredInstallPrompt = null;
 
 /* =========================================================================
- * INICIALIZACIÓN Y PWA
+ * INICIALIZACIÓN Y PWA (INSTALACIÓN EN ANDROID)
  * ========================================================================= */
+
+function isStandaloneMode() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function updateInstallButtonsVisibility() {
+  const loginBtn = document.getElementById('btn-install-pwa');
+  const shellBtn = document.getElementById('btn-install-app-shell');
+  const helpBtn = document.getElementById('btn-android-help');
+
+  if (isStandaloneMode()) {
+    if (loginBtn) loginBtn.classList.add('hidden');
+    if (shellBtn) shellBtn.classList.add('hidden');
+    if (helpBtn) helpBtn.classList.add('hidden');
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    if (loginBtn) loginBtn.classList.remove('hidden');
+    if (shellBtn) shellBtn.classList.remove('hidden');
+  } else {
+    if (loginBtn) loginBtn.classList.add('hidden');
+    if (shellBtn) shellBtn.classList.add('hidden');
+  }
+}
+
+async function triggerAndroidInstall() {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    updateInstallButtonsVisibility();
+    if (choice && choice.outcome === 'accepted') {
+      showToast('Aplicación instalada en Android.', 'success');
+    }
+    return;
+  }
+  openAndroidInstallGuide();
+}
+
+function openAndroidInstallGuide() {
+  openModal('Instalar en Android', `
+    <div class="stack-md">
+      <p class="item-meta">Para agregar la aplicación a la pantalla de inicio de tu teléfono Android desde <strong>Google Chrome</strong>:</p>
+      <ol class="stack-sm" style="margin:0; padding-left:20px; font-size:14px;">
+        <li>Abrí esta URL en <strong>Google Chrome</strong> (asegurate de estar en HTTPS).</li>
+        <li>Tocá el menú de los tres puntos <strong>⋮</strong> arriba a la derecha.</li>
+        <li>Elegí <strong>"Instalar aplicación"</strong> o <strong>"Agregar a la pantalla principal"</strong>.</li>
+        <li>Confirmá tocando <strong>Instalar</strong>. Quedará con su ícono como una app independiente.</li>
+      </ol>
+      <button type="button" class="btn btn-primary" id="btn-close-android-guide">Entendido</button>
+    </div>
+  `);
+  const closeBtn = document.getElementById('btn-close-android-guide');
+  if (closeBtn) closeBtn.addEventListener('click', closeModal);
+}
 
 document.addEventListener('DOMContentLoaded', () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 
+  updateInstallButtonsVisibility();
+
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
     deferredInstallPrompt = e;
-    document.getElementById('btn-install-pwa').classList.remove('hidden');
+    updateInstallButtonsVisibility();
   });
 
-  document.getElementById('btn-install-pwa').addEventListener('click', async () => {
-    if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
+  window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
-    document.getElementById('btn-install-pwa').classList.add('hidden');
+    updateInstallButtonsVisibility();
+    showToast('Aplicación instalada en el dispositivo.', 'success');
   });
+
+  document.getElementById('btn-install-pwa').addEventListener('click', triggerAndroidInstall);
+  document.getElementById('btn-install-app-shell').addEventListener('click', triggerAndroidInstall);
+  document.getElementById('btn-android-help').addEventListener('click', openAndroidInstallGuide);
 
   document.getElementById('login-form').addEventListener('submit', onLoginSubmit);
   document.getElementById('btn-logout').addEventListener('click', logout);
@@ -144,11 +205,13 @@ function logout() {
   document.getElementById('app-shell').classList.add('hidden');
   document.getElementById('login-view').classList.remove('hidden');
   document.getElementById('login-form').reset();
+  updateInstallButtonsVisibility();
 }
 
 async function enterApp() {
   document.getElementById('login-view').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
+  updateInstallButtonsVisibility();
 
   const u = state.session;
   document.getElementById('topbar-user').textContent = `${u.Apellido}, ${u.Nombre} (LP ${u.LP}) · ${u.Rol.toUpperCase()}`;
@@ -169,10 +232,10 @@ async function enterApp() {
     lockBanner.classList.add('hidden');
   }
 
-  document.getElementById('admin-nav').classList.toggle('hidden', !isAdmin);
-  document.getElementById('prof-nav').classList.toggle('hidden', isAdmin);
+  document.getElementById('admin-nav').classList.add('hidden');
+  document.getElementById('prof-nav').classList.add('hidden');
 
-  switchTab(isAdmin ? 'usuarios' : 'prof-notas');
+  switchTab(isAdmin ? 'home' : 'prof-notas');
 }
 
 function switchTab(tabName) {
@@ -182,6 +245,7 @@ function switchTab(tabName) {
   });
 
   const titles = {
+    home: 'Inicio · Panel de Administración',
     usuarios: '1. Usuarios y Credenciales',
     profesores: '2. Profesores y Aulas Asignadas',
     alumnos: '3. Alumnos y Cursada',
@@ -190,11 +254,27 @@ function switchTab(tabName) {
     materias: '6. Materias',
     'prof-notas': 'Carga de Calificaciones',
     reportes: '7. Reportes Académicos',
-    config: '8. Configuración y Blanqueo'
+    config: '8. Configuración, Exportación y Blanqueo'
   };
   document.getElementById('topbar-title').textContent = titles[tabName] || 'EFSA';
 
   renderCurrentTab();
+}
+
+function renderSectionHeader(sectionTitle) {
+  if (!state.session || state.session.Rol.toLowerCase() !== 'admin') return '';
+  return `
+    <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+      <div class="card-title" style="margin:0; min-width:0;">${escapeHtml(sectionTitle)}</div>
+      <button type="button" class="btn btn-secondary btn-sm" data-go-home="true" style="white-space:nowrap; flex-shrink:0;">← Volver al inicio</button>
+    </div>
+  `;
+}
+
+function bindBackToHomeButtons(container) {
+  container.querySelectorAll('[data-go-home]').forEach(btn => {
+    btn.addEventListener('click', () => switchTab('home'));
+  });
 }
 
 async function renderCurrentTab() {
@@ -203,6 +283,7 @@ async function renderCurrentTab() {
 
   try {
     switch (state.activeTab) {
+      case 'home': return renderAdminHomeTab(main);
       case 'usuarios': return await renderUsersTab(main);
       case 'profesores': return await renderProfessorsAdminTab(main);
       case 'alumnos': return await renderStudentsTab(main);
@@ -214,9 +295,48 @@ async function renderCurrentTab() {
       case 'config': return await renderConfigTab(main);
     }
   } catch (err) {
-    main.innerHTML = `<div class="card">Error: ${escapeHtml(err.message)}</div>`;
+    main.innerHTML = `${renderSectionHeader('Error')}<div class="card">Error: ${escapeHtml(err.message)}</div>`;
+    bindBackToHomeButtons(main);
     showToast(err.message, 'error');
   }
+}
+
+function renderAdminHomeTab(main) {
+  const inst = state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales';
+  const ciclo = state.cache.config.Ciclo_Lectivo || new Date().getFullYear();
+
+  const sections = [
+    { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas y credenciales de admin y profesores' },
+    { tab: 'profesores', title: '2. Profesores', desc: 'Aulas y materias asignadas a cada docente' },
+    { tab: 'alumnos', title: '3. Alumnos', desc: 'Aspirantes, carga masiva y detalle de calificaciones' },
+    { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
+    { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
+    { tab: 'materias', title: '6. Materias', desc: 'Asignaturas, régimen, promoción y especialidades' },
+    { tab: 'prof-notas', title: 'Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
+    { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales a final, mérito, dragoneantes y faltantes' },
+    { tab: 'config', title: '8. Configuración', desc: 'Parámetros, exportar año a PDF y blanqueo anual' }
+  ];
+
+  main.innerHTML = `
+    <div class="stack-md">
+      <div class="card">
+        <div class="card-title" style="margin:0">${escapeHtml(inst)}</div>
+        <div class="item-meta">Ciclo Lectivo ${escapeHtml(ciclo)} · Elegí una sección para comenzar</div>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
+        ${sections.map(s => `
+          <button type="button" class="card stack-sm" data-home-nav="${escapeAttr(s.tab)}" style="text-align:left; cursor:pointer; border:1px solid var(--border, rgba(148,163,184,0.25));">
+            <div class="item-title">${escapeHtml(s.title)}</div>
+            <div class="item-meta">${escapeHtml(s.desc)}</div>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  main.querySelectorAll('[data-home-nav]').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.homeNav));
+  });
 }
 
 function sortByApellidoNombre(a, b) {
@@ -238,6 +358,7 @@ async function renderUsersTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('1. Usuarios y Credenciales')}
       <div class="row-gap">
         <button type="button" class="btn btn-primary" id="btn-new-user">+ Nuevo Usuario</button>
       </div>
@@ -258,6 +379,7 @@ async function renderUsersTab(main) {
     </div>
   `;
 
+  bindBackToHomeButtons(main);
   document.getElementById('btn-new-user').addEventListener('click', () => openUserForm(null));
   main.querySelectorAll('[data-edit-user]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -373,6 +495,7 @@ async function renderProfessorsAdminTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('2. Profesores y Aulas Asignadas')}
       ${profs.map(p => {
         const myAsg = assignments.filter(a => a.LP_Profesor === p.LP);
         const aulasUnicas = [...new Set(myAsg.map(a => a.ID_Aula))].map(idAula => {
@@ -414,6 +537,8 @@ async function renderProfessorsAdminTab(main) {
       }).join('') || '<div class="card">No hay profesores registrados.</div>'}
     </div>
   `;
+
+  bindBackToHomeButtons(main);
 }
 
 /* =========================================================================
@@ -434,6 +559,7 @@ async function renderStudentsTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('3. Alumnos y Cursada')}
       <div class="row-gap">
         <button type="button" class="btn btn-primary" id="btn-new-student">+ Nuevo Aspirante</button>
         <button type="button" class="btn btn-secondary" id="btn-bulk-student">Carga Masiva</button>
@@ -445,6 +571,8 @@ async function renderStudentsTab(main) {
       <div id="students-list" class="stack-sm"></div>
     </div>
   `;
+
+  bindBackToHomeButtons(main);
 
   const renderFiltered = () => {
     const q = document.getElementById('filter-student-aula').value.trim().toLowerCase();
@@ -723,6 +851,7 @@ async function renderAssignmentsTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('4. Asignaciones (Aula + Materia)')}
       <form id="assignment-form" class="card stack-md">
         <div class="card-title">Nueva Asignación (1 profesor por Aula + Materia)</div>
         <div class="row-gap">
@@ -764,6 +893,8 @@ async function renderAssignmentsTab(main) {
       </div>
     </div>
   `;
+
+  bindBackToHomeButtons(main);
 
   document.getElementById('assignment-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -812,6 +943,7 @@ async function renderClassroomsTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('5. Aulas')}
       <button type="button" class="btn btn-primary" id="btn-new-aula">+ Nueva Aula</button>
       <div class="stack-sm">
         ${classrooms.map(c => `
@@ -830,6 +962,7 @@ async function renderClassroomsTab(main) {
     </div>
   `;
 
+  bindBackToHomeButtons(main);
   document.getElementById('btn-new-aula').addEventListener('click', () => openClassroomForm(null));
   main.querySelectorAll('[data-edit-aula]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -909,6 +1042,7 @@ async function renderSubjectsTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('6. Materias')}
       <button type="button" class="btn btn-primary" id="btn-new-mat">+ Nueva Materia</button>
       <div class="stack-sm">
         ${subjects.map(m => {
@@ -930,6 +1064,7 @@ async function renderSubjectsTab(main) {
     </div>
   `;
 
+  bindBackToHomeButtons(main);
   document.getElementById('btn-new-mat').addEventListener('click', () => openSubjectForm(null));
   main.querySelectorAll('[data-edit-mat]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1029,7 +1164,7 @@ function openSubjectForm(mat) {
 }
 
 /* =========================================================================
- * CARGA DE CALIFICACIONES (ADMIN Y PROFESOR · PROMEDIOS EN VIVO)
+ * CARGA DE CALIFICACIONES (ADMIN Y PROFESOR · PROMEDIOS EN VIVO + EXPORTACIÓN)
  * ========================================================================= */
 
 function round3Client(num) {
@@ -1107,6 +1242,38 @@ function computeLiveRow(raw, subject, cfg) {
   return { promP1, promP2, promFinal, condicion };
 }
 
+function collectCurrentGradesTableData(container, fallbackRows, subjectObj, cfg) {
+  const headers = ['LP', 'Apellido y Nombre', 'P1 N1', 'P1 N2', 'P1 Rec', 'Prom P1', 'P2 N1', 'P2 N2', 'P2 Rec', 'Prom P2', 'Prom Gral', 'Condición'];
+  const exportRows = [];
+
+  container.querySelectorAll('tbody tr').forEach((tr, idx) => {
+    const baseRow = fallbackRows[idx] || {};
+    const raw = {};
+    tr.querySelectorAll('input.grade-input').forEach(inp => {
+      raw[inp.dataset.f] = inp.value.trim();
+    });
+    const live = computeLiveRow(raw, subjectObj, cfg);
+    const fmt = v => (v === '' || v === null || v === undefined ? '-' : v);
+
+    exportRows.push([
+      baseRow.LP_Alumno || '',
+      `${baseRow.Apellido || ''}, ${baseRow.Nombre || ''}`,
+      fmt(raw.P1_N1),
+      fmt(raw.P1_N2),
+      fmt(raw.P1_Rec),
+      fmt(live.promP1),
+      fmt(raw.P2_N1),
+      fmt(raw.P2_N2),
+      fmt(raw.P2_Rec),
+      fmt(live.promP2),
+      fmt(live.promFinal),
+      live.condicion
+    ]);
+  });
+
+  return { headers, exportRows };
+}
+
 async function renderGradesTab(main) {
   const isAdmin = state.session.Rol.toLowerCase() === 'admin';
   const isLocked = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI' && !isAdmin;
@@ -1154,6 +1321,7 @@ async function renderGradesTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('Carga de Calificaciones')}
       <div class="card stack-md">
         <div class="card-title">${isAdmin ? 'Seleccionar Aula y Materia (Acceso Admin)' : 'Seleccionar Curso Asignado'}</div>
         <div class="field">
@@ -1168,6 +1336,8 @@ async function renderGradesTab(main) {
     </div>
   `;
 
+  bindBackToHomeButtons(main);
+
   const sel = document.getElementById('prof-assignment-select');
   sel.addEventListener('change', async () => {
     const val = sel.value;
@@ -1181,17 +1351,26 @@ async function renderGradesTab(main) {
     container.innerHTML = '<div class="card">Cargando planilla de alumnos...</div>';
 
     try {
-      const rows = (await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria }))
+      const resp = await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria });
+      const rows = (resp.rows || [])
         .sort((a, b) => sortByApellidoNombre({ Apellido: a.Apellido, Nombre: a.Nombre }, { Apellido: b.Apellido, Nombre: b.Nombre }));
-      state.profSelection = { idAula, idMateria, subject: subjectObj, grades: rows };
+      const meta = resp.meta || {};
+      state.profSelection = { idAula, idMateria, subject: subjectObj, meta, grades: rows };
 
       container.innerHTML = `
         <div class="card stack-md">
           <div class="row-gap" style="justify-content:space-between">
-            <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos)</div>
-            <button type="button" class="btn btn-success btn-sm" id="btn-save-all-grades" ${isLocked ? 'disabled' : ''}>
-              Guardar Todo
-            </button>
+            <div>
+              <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos)</div>
+              <div class="item-meta">Escuela: <strong>${escapeHtml(meta.instituto || '')}</strong> · Aula: <strong>${escapeHtml(meta.Nombre_Aula || idAula)}</strong> · Materia: <strong>${escapeHtml(meta.Nombre_Materia || idMateria)}</strong> · Profesor: <strong>${escapeHtml(meta.Profesor || '')}</strong></div>
+            </div>
+            <div class="row-gap">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-export-course-excel">Exportar Excel</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-export-course-pdf">Exportar PDF</button>
+              <button type="button" class="btn btn-success btn-sm" id="btn-save-all-grades" ${isLocked ? 'disabled' : ''}>
+                Guardar Todo
+              </button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
@@ -1253,6 +1432,22 @@ async function renderGradesTab(main) {
         });
       });
 
+      const headerLines = [
+        `Escuela: ${meta.instituto || state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales'} · Ciclo Lectivo ${meta.cicloLectivo || ''}`,
+        `Aula: ${meta.Nombre_Aula || idAula}${meta.Especialidad ? ` (${meta.Especialidad})` : ''} · Materia: ${meta.Nombre_Materia || idMateria} · Profesor: ${meta.Profesor || ''}`
+      ];
+      const safeFile = `Calificaciones_${(meta.Nombre_Aula || idAula)}_${(meta.Nombre_Materia || idMateria)}`.replace(/[^a-zA-Z0-9_-]+/g, '_');
+
+      document.getElementById('btn-export-course-excel').addEventListener('click', () => {
+        const { headers, exportRows } = collectCurrentGradesTableData(container, rows, subjectObj, state.cache.config || {});
+        exportTableToExcel(safeFile, headerLines, headers, exportRows);
+      });
+
+      document.getElementById('btn-export-course-pdf').addEventListener('click', () => {
+        const { headers, exportRows } = collectCurrentGradesTableData(container, rows, subjectObj, state.cache.config || {});
+        exportTableToPdf(`Calificaciones · ${meta.Nombre_Materia || idMateria}`, headerLines, headers, exportRows);
+      });
+
       document.getElementById('btn-save-all-grades').addEventListener('click', async () => {
         const items = [];
         container.querySelectorAll('tbody tr').forEach((tr, i) => {
@@ -1278,12 +1473,13 @@ async function renderGradesTab(main) {
 }
 
 /* =========================================================================
- * 7. REPORTES (SUBPESTAÑAS + EXPORTACIÓN EXCEL Y PDF)
+ * 7. REPORTES (SUBPESTAÑAS + EXPORTACIÓN EXCEL Y PDF CON NOMBRE DE ESCUELA)
  * ========================================================================= */
 
 async function renderReportsTab(main) {
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('7. Reportes Académicos')}
       <div class="subtabs" id="report-subtabs">
         <button type="button" class="subtab-btn ${state.activeReportSubtab === 'promocionales' ? 'active' : ''}" data-rsub="promocionales">Promocionales a Final</button>
         <button type="button" class="subtab-btn ${state.activeReportSubtab === 'merito' ? 'active' : ''}" data-rsub="merito">Orden de Mérito</button>
@@ -1293,6 +1489,8 @@ async function renderReportsTab(main) {
       <div id="report-output" class="stack-md"><div class="card">Calculando reporte...</div></div>
     </div>
   `;
+
+  bindBackToHomeButtons(main);
 
   const data = await apiPost('getReports', {});
   state.cache.reports = data;
@@ -1418,70 +1616,97 @@ function renderSimpleTable(headers, rows, emptyMsg) {
   `;
 }
 
+function getSchoolHeaderLines() {
+  const inst = state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales';
+  const ciclo = state.cache.config.Ciclo_Lectivo || '';
+  return [ciclo ? `${inst} · Ciclo Lectivo ${ciclo}` : inst];
+}
+
+function exportTableToExcel(fileBaseName, headerLines, headers, rows) {
+  const metaRowsHtml = (headerLines || [])
+    .map(line => `<tr><td colspan="${Math.max(1, headers.length)}"><strong>${escapeHtml(line)}</strong></td></tr>`)
+    .join('');
+
+  const tableHtml = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+    <head><meta charset="UTF-8" /></head>
+    <body>
+      <table border="1">
+        <thead>
+          ${metaRowsHtml}
+          <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+    </body>
+    </html>
+  `;
+  const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${fileBaseName}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportTableToPdf(reportTitle, headerLines, headers, rows) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
+    return;
+  }
+  const metaHtml = (headerLines || [])
+    .map(line => `<div class="meta-line">${escapeHtml(line)}</div>`)
+    .join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>${escapeHtml(reportTitle)}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; color: #0f172a; }
+        .doc-header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 12px; }
+        .meta-line { font-size: 12px; color: #334155; margin-bottom: 3px; }
+        h2 { margin: 4px 0 0 0; font-size: 18px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
+        th { background: #f1f5f9; }
+      </style>
+    </head>
+    <body>
+      <div class="doc-header">
+        ${metaHtml}
+        <h2>${escapeHtml(reportTitle)}</h2>
+      </div>
+      <table>
+        <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+      <script>window.onload = function() { window.print(); };<\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
 function bindExportButtons(fileBaseName, reportTitle, headers, rows) {
+  const headerLines = getSchoolHeaderLines();
   const excelBtn = document.getElementById('btn-exp-excel');
   if (excelBtn) {
-    excelBtn.addEventListener('click', () => {
-      const tableHtml = `
-        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
-        <head><meta charset="UTF-8" /></head>
-        <body>
-          <table border="1">
-            <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-            <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
-          </table>
-        </body>
-        </html>
-      `;
-      const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${fileBaseName}.xls`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+    excelBtn.addEventListener('click', () => exportTableToExcel(fileBaseName, headerLines, headers, rows));
   }
 
   const pdfBtn = document.getElementById('btn-exp-pdf');
   if (pdfBtn) {
-    pdfBtn.addEventListener('click', () => {
-      const win = window.open('', '_blank');
-      if (!win) {
-        showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
-        return;
-      }
-      win.document.write(`
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="UTF-8" />
-          <title>${escapeHtml(reportTitle)}</title>
-          <style>
-            body { font-family: Arial, sans-serif; padding: 20px; color: #0f172a; }
-            h2 { margin-top: 0; }
-            table { width: 100%; border-collapse: collapse; font-size: 12px; }
-            th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
-            th { background: #f1f5f9; }
-          </style>
-        </head>
-        <body>
-          <h2>${escapeHtml(reportTitle)}</h2>
-          <table>
-            <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-            <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
-          </table>
-          <script>window.onload = function() { window.print(); };<\/script>
-        </body>
-        </html>
-      `);
-      win.document.close();
-    });
+    pdfBtn.addEventListener('click', () => exportTableToPdf(reportTitle, headerLines, headers, rows));
   }
 }
 
 /* =========================================================================
- * 8. CONFIGURACIÓN Y BLANQUEO ANUAL
+ * 8. CONFIGURACIÓN, EXPORTAR AÑO Y BLANQUEO ANUAL
  * ========================================================================= */
 
 async function renderConfigTab(main) {
@@ -1490,6 +1715,7 @@ async function renderConfigTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('8. Configuración, Exportación y Blanqueo')}
       <form id="config-form" class="card stack-md">
         <div class="card-title">Parámetros Globales</div>
         <div class="field">
@@ -1520,6 +1746,25 @@ async function renderConfigTab(main) {
         <button type="submit" class="btn btn-primary">Guardar Configuración</button>
       </form>
 
+      <div class="card stack-md" style="border-color: var(--primary-hover)">
+        <div class="card-title">Exportar Año (Acta Completa en PDF)</div>
+        <p class="item-meta">Genera un PDF con una hoja por cada <strong>Aula + Materia</strong>, incluyendo encabezado con escuela, aula, materia y profesor, y todos los alumnos con sus calificaciones (completando con <strong>Baja</strong> las notas faltantes de alumnos dados de baja).</p>
+        <div class="field">
+          <label>Escribí <strong>EXPORTAR</strong> para confirmar</label>
+          <input id="export-year-confirm" type="text" placeholder="EXPORTAR" />
+        </div>
+        <button type="button" class="btn btn-primary" id="btn-export-year">Exportar Año a PDF</button>
+        <div id="export-year-progress" class="stack-sm hidden" style="margin-top:6px;">
+          <div style="display:flex; justify-content:space-between; font-size:13px;">
+            <span id="export-year-status">Preparando exportación...</span>
+            <strong id="export-year-pct">0%</strong>
+          </div>
+          <div style="width:100%; height:10px; background:rgba(148,163,184,0.25); border-radius:999px; overflow:hidden;">
+            <div id="export-year-bar" style="width:0%; height:100%; background:var(--primary, #2563eb); transition:width 0.25s ease;"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="card stack-md" style="border-color: var(--danger)">
         <div class="card-title" style="color: #fca5a5">Blanqueo Anual de Ciclo</div>
         <p class="item-meta">Borra todos los registros de <strong>Alumnos</strong> y <strong>Calificaciones</strong>, conservando Usuarios, Aulas, Materias, Asignaciones y Configuración.</p>
@@ -1531,6 +1776,8 @@ async function renderConfigTab(main) {
       </div>
     </div>
   `;
+
+  bindBackToHomeButtons(main);
 
   document.getElementById('config-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -1545,6 +1792,53 @@ async function renderConfigTab(main) {
     }
   });
 
+  document.getElementById('btn-export-year').addEventListener('click', async () => {
+    const confirmText = document.getElementById('export-year-confirm').value.trim();
+    const btn = document.getElementById('btn-export-year');
+    const progWrap = document.getElementById('export-year-progress');
+    const progBar = document.getElementById('export-year-bar');
+    const progPct = document.getElementById('export-year-pct');
+    const progStatus = document.getElementById('export-year-status');
+
+    const setProgress = (pct, msg) => {
+      const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+      progBar.style.width = safePct + '%';
+      progPct.textContent = safePct + '%';
+      if (msg) progStatus.textContent = msg;
+    };
+
+    btn.disabled = true;
+    progWrap.classList.remove('hidden');
+    setProgress(10, 'Validando confirmación y conectando...');
+
+    const startTime = Date.now();
+    let currentPct = 10;
+    const ticker = setInterval(() => {
+      if (currentPct < 45) {
+        currentPct += 3;
+        const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+        setProgress(currentPct, `Consultando planilla en servidor... (${elapsedSec}s)`);
+      }
+    }, 500);
+
+    try {
+      const yearData = await apiPost('getYearExportData', { confirmText });
+      clearInterval(ticker);
+      setProgress(55, 'Datos recibidos. Generando actas por aula y materia...');
+      await openYearExportPdf(yearData, (p, m) => setProgress(p, m));
+      const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
+      setProgress(100, `Listo en ${totalSec}s. Se abrió la vista de impresión/PDF.`);
+      document.getElementById('export-year-confirm').value = '';
+      showToast(`Exportación anual lista (${totalSec}s).`, 'success');
+    } catch (err) {
+      clearInterval(ticker);
+      setProgress(0, 'Error en la exportación.');
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   document.getElementById('btn-blanqueo').addEventListener('click', async () => {
     const txt = document.getElementById('blanqueo-confirm').value.trim();
     try {
@@ -1555,6 +1849,109 @@ async function renderConfigTab(main) {
       showToast(err.message, 'error');
     }
   });
+}
+
+async function openYearExportPdf(yearData, onProgress = null) {
+  const actas = yearData.actas || [];
+  if (actas.length === 0) {
+    throw new Error('No hay actas de aulas y materias para exportar.');
+  }
+
+  const win = window.open('', '_blank');
+  if (!win) {
+    throw new Error('Permití las ventanas emergentes para exportar el PDF anual.');
+  }
+
+  const fmtCell = val => (val === '' || val === null || val === undefined ? '-' : val);
+  const pages = [];
+
+  for (let idx = 0; idx < actas.length; idx++) {
+    const acta = actas[idx];
+    const pageBreakStyle = idx < actas.length - 1 ? 'page-break-after: always;' : '';
+    pages.push(`
+      <div class="acta-page" style="${pageBreakStyle}">
+        <div class="acta-header">
+          <div class="instituto">${escapeHtml(acta.instituto)} · Ciclo Lectivo ${escapeHtml(acta.cicloLectivo)}</div>
+          <div class="meta-grid">
+            <div><strong>Aula:</strong> ${escapeHtml(acta.Nombre_Aula)} (${escapeHtml(acta.Especialidad)})</div>
+            <div><strong>Materia:</strong> ${escapeHtml(acta.Nombre_Materia)}</div>
+            <div><strong>Profesor:</strong> ${escapeHtml(acta.Profesor)}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>LP</th>
+              <th>Apellido y Nombre</th>
+              <th>P1 N1</th>
+              <th>P1 N2</th>
+              <th>P1 Rec</th>
+              <th>Prom P1</th>
+              <th>P2 N1</th>
+              <th>P2 N2</th>
+              <th>P2 Rec</th>
+              <th>Prom P2</th>
+              <th>Prom Gral</th>
+              <th>Condición</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${acta.alumnos.map(al => `
+              <tr>
+                <td>${escapeHtml(al.LP)}</td>
+                <td>${escapeHtml(al.Apellido_Nombre)}</td>
+                <td>${escapeHtml(fmtCell(al.P1_N1))}</td>
+                <td>${escapeHtml(fmtCell(al.P1_N2))}</td>
+                <td>${escapeHtml(fmtCell(al.P1_Rec))}</td>
+                <td><strong>${escapeHtml(fmtCell(al.Prom_P1))}</strong></td>
+                <td>${escapeHtml(fmtCell(al.P2_N1))}</td>
+                <td>${escapeHtml(fmtCell(al.P2_N2))}</td>
+                <td>${escapeHtml(fmtCell(al.P2_Rec))}</td>
+                <td><strong>${escapeHtml(fmtCell(al.Prom_P2))}</strong></td>
+                <td><strong>${escapeHtml(fmtCell(al.Prom_Final))}</strong></td>
+                <td>${escapeHtml(fmtCell(al.Condicion))}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="12">Sin alumnos registrados en esta aula.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `);
+
+    if (onProgress && (idx % 3 === 0 || idx === actas.length - 1)) {
+      const pct = 55 + Math.round(((idx + 1) / actas.length) * 35);
+      onProgress(pct, `Armando acta ${idx + 1} de ${actas.length}...`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  if (onProgress) onProgress(95, 'Abriendo ventana de impresión/PDF...');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Acta Anual · ${escapeHtml(yearData.instituto)}</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 14px; color: #0f172a; }
+        .acta-header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 10px; }
+        .instituto { font-size: 15px; font-weight: bold; margin-bottom: 6px; }
+        .meta-grid { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { border: 1px solid #94a3b8; padding: 4px 6px; text-align: left; }
+        th { background: #e2e8f0; }
+        @media print {
+          body { padding: 0; }
+        }
+      </style>
+    </head>
+    <body>
+      ${pages.join('')}
+      <script>window.onload = function() { window.print(); };<\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
 }
 
 /* =========================================================================

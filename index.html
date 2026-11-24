@@ -2,86 +2,79 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a192f" />
-  <title>EFSA · Gestión Académica</title>
-  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Gestión Académica · EFSA</title>
   <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
   <!-- PANTALLA DE LOGIN -->
-  <section id="login-view" class="login-screen">
-    <div class="login-card">
-      <div class="brand-badge">EFSA</div>
-      <h1>Gestión Académica</h1>
-      <p class="subtitle">Ingresá con tu usuario y contraseña institucional</p>
+  <section id="login-view" class="login-wrapper">
+    <div class="card login-card stack-md">
+      <div>
+        <div class="card-title">Escuela de Suboficiales</div>
+        <div class="item-meta">Sistema de Gestión Académica · Ingresá con tu cuenta</div>
+      </div>
 
       <form id="login-form" class="stack-md">
         <div class="field">
           <label for="login-usuario">Usuario</label>
-          <input id="login-usuario" name="usuario" type="text" autocomplete="username" required placeholder="Ej. admin" />
+          <input id="login-usuario" name="usuario" type="text" autocomplete="username" required placeholder="Tu usuario" />
         </div>
         <div class="field">
           <label for="login-password">Contraseña</label>
-          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••" />
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="Tu contraseña" />
         </div>
-        <button type="submit" class="btn btn-primary btn-block" id="btn-login">Ingresar</button>
+        <button id="btn-login" type="submit" class="btn btn-primary">Iniciar Sesión</button>
       </form>
+
+      <div class="row-gap" style="justify-content:space-between;">
+        <button id="btn-install-pwa" type="button" class="btn btn-secondary btn-sm hidden">Instalar en Android</button>
+        <button id="btn-android-help" type="button" class="btn btn-secondary btn-sm">Cómo instalar en Android</button>
+      </div>
     </div>
   </section>
 
-  <!-- APLICACIÓN PRINCIPAL -->
+  <!-- SHELL PRINCIPAL -->
   <div id="app-shell" class="app-shell hidden">
     <header class="topbar">
-      <div class="topbar-left">
-        <span class="brand-pill">EFSA</span>
-        <div>
-          <div id="topbar-title" class="topbar-title">Panel</div>
-          <div id="topbar-user" class="topbar-sub"></div>
-        </div>
+      <div class="topbar-info">
+        <div id="topbar-title" class="topbar-title">EFSA</div>
+        <div id="topbar-user" class="topbar-meta"></div>
       </div>
-      <div class="topbar-actions">
-        <button type="button" id="btn-install-pwa" class="btn btn-ghost btn-sm hidden">Instalar</button>
-        <button type="button" id="btn-logout" class="btn btn-danger-outline btn-sm">Salir</button>
+      <div class="row-gap">
+        <button id="btn-install-app-shell" type="button" class="btn btn-secondary btn-sm hidden">Instalar App</button>
+        <button id="btn-logout" type="button" class="btn btn-secondary btn-sm">Salir</button>
       </div>
     </header>
 
     <div id="lock-banner" class="lock-banner hidden">
-      ⚠️ Plataforma cerrada para carga de calificaciones por parte de profesores.
+      La plataforma se encuentra cerrada para la carga de calificaciones por parte de profesores.
     </div>
 
     <main id="main-content" class="main-content"></main>
 
-    <!-- NAVEGACIÓN INFERIOR (ADMIN) -->
-    <nav id="admin-nav" class="bottom-nav hidden" aria-label="Módulos de administración">
-      <button type="button" data-tab="usuarios" class="nav-btn active">Usuarios</button>
-      <button type="button" data-tab="profesores" class="nav-btn">Profesores</button>
-      <button type="button" data-tab="alumnos" class="nav-btn">Alumnos</button>
-      <button type="button" data-tab="asignaciones" class="nav-btn">Asignac.</button>
-      <button type="button" data-tab="aulas" class="nav-btn">Aulas</button>
-      <button type="button" data-tab="materias" class="nav-btn">Materias</button>
-      <button type="button" data-tab="prof-notas" class="nav-btn">Notas</button>
-      <button type="button" data-tab="reportes" class="nav-btn">Reportes</button>
-      <button type="button" data-tab="config" class="nav-btn">Config.</button>
-    </nav>
-
-    <!-- NAVEGACIÓN INFERIOR (PROFESOR) -->
-    <nav id="prof-nav" class="bottom-nav prof-nav hidden" aria-label="Vista profesor">
-      <button type="button" data-tab="prof-notas" class="nav-btn active">Mis Cursos y Notas</button>
-    </nav>
+    <!-- NAVEGACIÓN INFERIOR (SE OCULTA EN ADMIN PARA USAR PORTADA DE INICIO) -->
+    <nav id="admin-nav" class="bottom-nav hidden"></nav>
+    <nav id="prof-nav" class="bottom-nav hidden"></nav>
   </div>
 
-  <!-- MODAL GENÉRICO -->
+  <!-- MODAL -->
   <div id="modal-backdrop" class="modal-backdrop hidden">
-    <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-card stack-md" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-header">
-        <h3 id="modal-title">Detalle</h3>
-        <button type="button" id="btn-close-modal" class="icon-btn" aria-label="Cerrar">✕</button>
+        <div id="modal-title" class="card-title" style="margin:0"></div>
+        <button id="btn-close-modal" type="button" class="btn btn-secondary btn-sm">Cerrar</button>
       </div>
-      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-body"></div>
     </div>
   </div>
 
