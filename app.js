@@ -1,4 +1,4 @@
-const API_URL = 'TU_URL_DE_APPS_SCRIPT_EXEC';
+const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4XSYoZFUrvr3EIjZZlRLK_N8KNZKmeQNH6ceK_FYBEJwD/exec';
 const SESSION_KEY = 'efsa_session_v1';
 
 const state = {
