@@ -1,5 +1,5 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4XSYoZFUrvr3EIjZZlRLK_N8KNZKmeQNH6ceK_FYBEJwD/exec';
-const SESSION_KEY = 'efsa_session_v1';
+const SESSION_KEY = 'efsa_session_v2';
 
 const state = {
   session: null,
