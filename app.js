@@ -386,16 +386,16 @@ function renderAdminHomeTab(main) {
   const ciclo = state.cache.config.Ciclo_Lectivo || new Date().getFullYear();
 
   const sections = [
-    { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas, correos y credenciales' },
+    { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas, correos, teléfonos y credenciales' },
     { tab: 'profesores', title: '2. Profesores', desc: 'Buscar por apellido, ver y exportar designaciones' },
     { tab: 'alumnos', title: '3. Alumnos', desc: 'Altas/bajas, filtros, carga masiva y detalle' },
     { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
     { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
     { tab: 'materias', title: '6. Materias', desc: 'Asignaturas, régimen, promoción y especialidades' },
-    { tab: 'chapero', title: '7. Chapero', desc: 'Horarios semanales por aula y exportación PDF' },
-    { tab: 'prof-notas', title: '8. Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
-    { tab: 'reportes', title: '9. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
-    { tab: 'config', title: '10. Configuración', desc: 'Escudo, horarios, recuperación, exportar año y blanqueo' }
+    { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
+    { tab: 'config', title: '8. Configuración', desc: 'Escudo, horarios, recuperación, exportar año y blanqueo' },
+    { tab: 'chapero', title: '9. Chapero', desc: 'Horarios semanales por aula y exportación PDF' },
+    { tab: 'prof-notas', title: '10. Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' }
   ];
 
   main.innerHTML = `
@@ -539,7 +539,7 @@ async function renderUsersTab(main) {
           <div class="list-item">
             <div class="item-main">
               <div class="item-title">${escapeHtml(u.Apellido)}, ${escapeHtml(u.Nombre)} · LP ${escapeHtml(u.LP)}</div>
-              <div class="item-meta">Usuario: <strong>${escapeHtml(u.Usuario)}</strong> · Rol: ${escapeHtml(u.Rol)}${u.Email ? ` · Correo: ${escapeHtml(u.Email)}` : ' · Sin correo'}</div>
+              <div class="item-meta">Usuario: <strong>${escapeHtml(u.Usuario)}</strong> · Rol: ${escapeHtml(u.Rol)}${u.Email ? ` · Correo: ${escapeHtml(u.Email)}` : ' · Sin correo'}${u.Telefono ? ` · Teléfono: ${escapeHtml(u.Telefono)}` : ''}</div>
             </div>
             <div class="row-gap">
               <span class="badge ${u.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${u.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
@@ -587,6 +587,10 @@ function openUserForm(user) {
         <div class="field">
           <label>Correo Electrónico</label>
           <input name="Email" type="email" value="${escapeAttr(user ? (user.Email || '') : '')}" placeholder="profesor@institucion.edu.ar" />
+        </div>
+        <div class="field">
+          <label>Teléfono</label>
+          <input name="Telefono" type="tel" value="${escapeAttr(user ? (user.Telefono || '') : '')}" placeholder="Ej. 11 5555-5555" />
         </div>
       </div>
       <div class="row-gap">
@@ -654,7 +658,7 @@ function openUserForm(user) {
 }
 
 /* =========================================================================
- * 2. PROFESORES (BUSCADOR POR APELLIDO + DETALLE AL CLICK + EXPORTAR)
+ * 2. PROFESORES (BUSCADOR POR APELLIDO + TELÉFONO + DETALLE + EXPORTAR)
  * ========================================================================= */
 
 async function renderProfessorsAdminTab(main) {
@@ -716,7 +720,7 @@ async function renderProfessorsAdminTab(main) {
       <div class="list-item clickable" data-open-prof="${escapeAttr(p.LP)}">
         <div class="item-main">
           <div class="item-title">${escapeHtml(p.Apellido)}, ${escapeHtml(p.Nombre)} · LP ${escapeHtml(p.LP)}</div>
-          <div class="item-meta">Usuario: <strong>${escapeHtml(p.Usuario)}</strong>${p.Email ? ` · Correo: ${escapeHtml(p.Email)}` : ''}</div>
+          <div class="item-meta">Usuario: <strong>${escapeHtml(p.Usuario)}</strong>${p.Email ? ` · Correo: ${escapeHtml(p.Email)}` : ' · Sin correo'}${p.Telefono ? ` · Teléfono: ${escapeHtml(p.Telefono)}` : ' · Sin teléfono'}</div>
         </div>
         <span class="badge ${p.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${p.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
       </div>
@@ -751,7 +755,7 @@ function openProfessorDesignationsModal(prof, desigs) {
   openModal(title, `
     <div class="stack-md">
       <div class="row-gap" style="justify-content:space-between;">
-        <div class="item-meta">Total de designaciones: <strong>${desigs.length}</strong></div>
+        <div class="item-meta">Total de designaciones: <strong>${desigs.length}</strong>${prof.Telefono ? ` · Tel: <strong>${escapeHtml(prof.Telefono)}</strong>` : ''}</div>
         <div class="row-gap">
           <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-prof-excel">Exportar Excel</button>
           <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-prof-pdf">Exportar PDF</button>
@@ -1466,7 +1470,7 @@ function openSubjectForm(mat) {
 }
 
 /* =========================================================================
- * CHAPERO (HORARIOS POR AULA DE LUNES A VIERNES + EXPORTACIÓN PDF)
+ * 9. CHAPERO (HORARIOS POR AULA DE LUNES A VIERNES + EXPORTACIÓN PDF)
  * ========================================================================= */
 
 function getHoursConfig(cfg = {}) {
@@ -1501,7 +1505,7 @@ async function renderChaperoTab(main) {
   if (!state.selectedChaperoAulaId) {
     main.innerHTML = `
       <div class="stack-md">
-        ${renderSectionHeader('Chapero · Selección de Aula')}
+        ${renderSectionHeader('9. Chapero · Selección de Aula')}
         <div class="card">
           <div class="item-meta">Seleccioná un aula para visualizar o editar su grilla horaria de lunes a viernes.</div>
         </div>
@@ -1558,7 +1562,7 @@ async function renderChaperoTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
-      ${renderSectionHeader(`Chapero · Aula ${aula.Nombre_Aula} (${aula.Especialidad})`, {
+      ${renderSectionHeader(`9. Chapero · Aula ${aula.Nombre_Aula} (${aula.Especialidad})`, {
         backAction: true,
         backId: 'btn-back-chapero-aulas',
         backLabel: 'Volver a Aulas'
@@ -1785,7 +1789,7 @@ function exportChaperoPdf(aula, hours, currentGrid, matMap, profBySubject, cfg) 
 }
 
 /* =========================================================================
- * CARGA DE CALIFICACIONES
+ * 10. CARGA DE CALIFICACIONES
  * ========================================================================= */
 
 function round3Client(num) {
@@ -1942,7 +1946,7 @@ async function renderGradesTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
-      ${renderSectionHeader('Carga de Calificaciones')}
+      ${renderSectionHeader('10. Carga de Calificaciones')}
       <div class="card stack-md">
         <div class="card-title">${isAdmin ? 'Seleccionar Aula y Materia (Acceso Admin)' : 'Seleccionar Curso Asignado'}</div>
         <div class="field">
@@ -2297,8 +2301,8 @@ async function renderReportsTab(main) {
       const list = (data.faltantesPorNota && data.faltantesPorNota[selectedField]) || [];
       fileBaseName = `Faltantes_${selectedField}`;
       reportTitle = `Notas Faltantes - ${mapLabels[selectedField]}`;
-      headers = ['#', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
-      rows = list.map((r, i) => [i + 1, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
+      headers = ['#', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Profesor', 'Nota Faltante'];
+      rows = list.map((r, i) => [i + 1, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Profesor || 'Sin asignar', mapLabels[selectedField]]);
     } else if (state.activeReportSubtab === 'bajas') {
       const list = data.bajas || [];
       reportTitle = 'Aspirantes de Baja';
