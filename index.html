@@ -16,12 +16,21 @@
 <body>
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
+  <!-- BLOQUEO GLOBAL DURANTE OPERACIONES API -->
+  <div id="global-blocker" class="global-blocker hidden" aria-hidden="true">
+    <div class="blocker-box">
+      <div class="spinner"></div>
+      <div id="global-blocker-text">Procesando solicitud...</div>
+    </div>
+  </div>
+
   <!-- PANTALLA DE LOGIN -->
   <section id="login-view" class="login-wrapper">
     <div class="card login-card stack-md">
-      <div>
-        <div class="card-title">Escuela de Suboficiales</div>
-        <div class="item-meta">Sistema de Gestión Académica · Ingresá con tu cuenta</div>
+      <div class="login-brand">
+        <img id="login-escudo" class="login-escudo hidden" alt="Escudo institucional" />
+        <div id="login-instituto" class="login-instituto">Escuela de Suboficiales</div>
+        <div class="item-meta" style="text-align:center;">Sistema de Gestión Académica</div>
       </div>
 
       <form id="login-form" class="stack-md">
@@ -36,9 +45,8 @@
         <button id="btn-login" type="submit" class="btn btn-primary">Iniciar Sesión</button>
       </form>
 
-      <div class="row-gap" style="justify-content:space-between;">
-        <button id="btn-install-pwa" type="button" class="btn btn-secondary btn-sm hidden">Instalar en Android</button>
-        <button id="btn-android-help" type="button" class="btn btn-secondary btn-sm">Cómo instalar en Android</button>
+      <div style="text-align:center;">
+        <button id="btn-forgot-password" type="button" class="btn-link">¿Olvidaste tu contraseña?</button>
       </div>
     </div>
   </section>
@@ -46,12 +54,15 @@
   <!-- SHELL PRINCIPAL -->
   <div id="app-shell" class="app-shell hidden">
     <header class="topbar">
-      <div class="topbar-info">
-        <div id="topbar-title" class="topbar-title">EFSA</div>
-        <div id="topbar-user" class="topbar-meta"></div>
+      <div class="topbar-brand">
+        <img id="topbar-escudo" class="topbar-escudo hidden" alt="Escudo" />
+        <div class="topbar-info">
+          <div id="topbar-instituto" class="topbar-instituto">Escuela de Suboficiales</div>
+          <div id="topbar-title" class="topbar-title">EFSA</div>
+          <div id="topbar-user" class="topbar-meta"></div>
+        </div>
       </div>
       <div class="row-gap">
-        <button id="btn-install-app-shell" type="button" class="btn btn-secondary btn-sm hidden">Instalar App</button>
         <button id="btn-logout" type="button" class="btn btn-secondary btn-sm">Salir</button>
       </div>
     </header>
@@ -62,7 +73,6 @@
 
     <main id="main-content" class="main-content"></main>
 
-    <!-- NAVEGACIÓN INFERIOR (SE OCULTA EN ADMIN PARA USAR PORTADA DE INICIO) -->
     <nav id="admin-nav" class="bottom-nav hidden"></nav>
     <nav id="prof-nav" class="bottom-nav hidden"></nav>
   </div>

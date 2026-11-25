@@ -1,5 +1,8 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4XSYoZFUrvr3EIjZZlRLK_N8KNZKmeQNH6ceK_FYBEJwD/exec';
-const SESSION_KEY = 'efsa_session_v2';
+const SESSION_KEY = 'efsa_session_v1';
+const PAGE_SIZE_30 = 30;
+const ALLOWED_SHIELD_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const MAX_SHIELD_RAW_BYTES = 5 * 1024 * 1024; // 5 MB antes de comprimir
 
 const state = {
   session: null,
@@ -7,6 +10,9 @@ const state = {
   activeTab: null,
   activeReportSubtab: 'promocionales',
   selectedMissingGrade: 'P1_N1',
+  studentStatusFilter: 'Todos',
+  reportPage: 1,
+  studentPage: 1,
   cache: {
     users: [],
     classrooms: [],
@@ -25,66 +31,23 @@ const state = {
   }
 };
 
-let deferredInstallPrompt = null;
+let pendingRequests = 0;
 
-/* =========================================================================
- * INICIALIZACIÓN Y PWA (INSTALACIÓN EN ANDROID)
- * ========================================================================= */
-
-function isStandaloneMode() {
-  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-}
-
-function updateInstallButtonsVisibility() {
-  const loginBtn = document.getElementById('btn-install-pwa');
-  const shellBtn = document.getElementById('btn-install-app-shell');
-  const helpBtn = document.getElementById('btn-android-help');
-
-  if (isStandaloneMode()) {
-    if (loginBtn) loginBtn.classList.add('hidden');
-    if (shellBtn) shellBtn.classList.add('hidden');
-    if (helpBtn) helpBtn.classList.add('hidden');
-    return;
-  }
-
-  if (deferredInstallPrompt) {
-    if (loginBtn) loginBtn.classList.remove('hidden');
-    if (shellBtn) shellBtn.classList.remove('hidden');
+function setUiBlocked(blocked, text = 'Procesando solicitud...') {
+  if (blocked) {
+    pendingRequests += 1;
   } else {
-    if (loginBtn) loginBtn.classList.add('hidden');
-    if (shellBtn) shellBtn.classList.add('hidden');
+    pendingRequests = Math.max(0, pendingRequests - 1);
   }
-}
-
-async function triggerAndroidInstall() {
-  if (deferredInstallPrompt) {
-    deferredInstallPrompt.prompt();
-    const choice = await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt = null;
-    updateInstallButtonsVisibility();
-    if (choice && choice.outcome === 'accepted') {
-      showToast('Aplicación instalada en Android.', 'success');
-    }
-    return;
+  const el = document.getElementById('global-blocker');
+  const txt = document.getElementById('global-blocker-text');
+  if (!el) return;
+  if (pendingRequests > 0) {
+    if (txt) txt.textContent = text;
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
   }
-  openAndroidInstallGuide();
-}
-
-function openAndroidInstallGuide() {
-  openModal('Instalar en Android', `
-    <div class="stack-md">
-      <p class="item-meta">Para agregar la aplicación a la pantalla de inicio de tu teléfono Android desde <strong>Google Chrome</strong>:</p>
-      <ol class="stack-sm" style="margin:0; padding-left:20px; font-size:14px;">
-        <li>Abrí esta URL en <strong>Google Chrome</strong> (asegurate de estar en HTTPS).</li>
-        <li>Tocá el menú de los tres puntos <strong>⋮</strong> arriba a la derecha.</li>
-        <li>Elegí <strong>"Instalar aplicación"</strong> o <strong>"Agregar a la pantalla principal"</strong>.</li>
-        <li>Confirmá tocando <strong>Instalar</strong>. Quedará con su ícono como una app independiente.</li>
-      </ol>
-      <button type="button" class="btn btn-primary" id="btn-close-android-guide">Entendido</button>
-    </div>
-  `);
-  const closeBtn = document.getElementById('btn-close-android-guide');
-  if (closeBtn) closeBtn.addEventListener('click', closeModal);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -92,25 +55,8 @@ document.addEventListener('DOMContentLoaded', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 
-  updateInstallButtonsVisibility();
-
-  window.addEventListener('beforeinstallprompt', e => {
-    e.preventDefault();
-    deferredInstallPrompt = e;
-    updateInstallButtonsVisibility();
-  });
-
-  window.addEventListener('appinstalled', () => {
-    deferredInstallPrompt = null;
-    updateInstallButtonsVisibility();
-    showToast('Aplicación instalada en el dispositivo.', 'success');
-  });
-
-  document.getElementById('btn-install-pwa').addEventListener('click', triggerAndroidInstall);
-  document.getElementById('btn-install-app-shell').addEventListener('click', triggerAndroidInstall);
-  document.getElementById('btn-android-help').addEventListener('click', openAndroidInstallGuide);
-
   document.getElementById('login-form').addEventListener('submit', onLoginSubmit);
+  document.getElementById('btn-forgot-password').addEventListener('click', openForgotPasswordModal);
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-close-modal').addEventListener('click', closeModal);
   document.getElementById('modal-backdrop').addEventListener('click', e => {
@@ -120,6 +66,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
+
+  applyBrandingUI(state.cache.config || {});
 
   const saved = sessionStorage.getItem(SESSION_KEY);
   if (saved) {
@@ -152,31 +100,90 @@ function closeModal() {
   document.getElementById('modal-body').innerHTML = '';
 }
 
-async function apiPost(action, payload = {}) {
+async function apiPost(action, payload = {}, opts = {}) {
   if (!API_URL || API_URL.includes('TU_URL_DE_APPS_SCRIPT_EXEC')) {
     throw new Error('Configurá primero la constante API_URL en app.js.');
   }
-  const body = Object.assign({}, payload, {
-    action: action,
-    actorLp: state.session ? state.session.LP : '',
-    actorToken: state.session ? state.session.token : ''
-  });
+  const showBlocker = opts.block !== false;
+  if (showBlocker) setUiBlocked(true, opts.blockerText || 'Comunicando con el servidor...');
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
-  });
+  try {
+    const body = Object.assign({}, payload, {
+      action: action,
+      actorLp: state.session ? state.session.LP : '',
+      actorToken: state.session ? state.session.token : ''
+    });
 
-  const json = await res.json();
-  if (!json.ok) {
-    throw new Error(json.error || 'Error en la operación.');
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    });
+
+    const json = await res.json();
+    if (!json.ok) {
+      throw new Error(json.error || 'Error en la operación.');
+    }
+    return json.data;
+  } finally {
+    if (showBlocker) setUiBlocked(false);
   }
-  return json.data;
 }
 
 /* =========================================================================
- * AUTENTICACIÓN Y SHELL
+ * MARCA INSTITUCIONAL Y ESCUDO (CON FALLBACK LIMPIO)
+ * ========================================================================= */
+
+function getInstitutionName(cfg = {}) {
+  const raw = String(cfg.Nombre_Instituto || '').trim();
+  return (raw || 'Escuela de Suboficiales').slice(0, 80);
+}
+
+function applyShieldImage(imgEl, escudoData) {
+  if (!imgEl) return;
+  const src = String(escudoData || '').trim();
+  if (!src) {
+    imgEl.removeAttribute('src');
+    imgEl.classList.add('hidden');
+    return;
+  }
+  imgEl.onerror = () => {
+    imgEl.removeAttribute('src');
+    imgEl.classList.add('hidden');
+  };
+  imgEl.onload = () => {
+    imgEl.classList.remove('hidden');
+  };
+  imgEl.src = src;
+}
+
+function applyBrandingUI(cfg = {}) {
+  const nombre = getInstitutionName(cfg);
+  const escudo = String(cfg.Escudo || '').trim();
+
+  document.title = `Gestión Académica · ${nombre}`;
+
+  const loginInst = document.getElementById('login-instituto');
+  if (loginInst) loginInst.textContent = nombre;
+  applyShieldImage(document.getElementById('login-escudo'), escudo);
+
+  const topInst = document.getElementById('topbar-instituto');
+  if (topInst) topInst.textContent = nombre;
+  applyShieldImage(document.getElementById('topbar-escudo'), escudo);
+}
+
+function formatNowDateTime() {
+  return new Date().toLocaleString('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+/* =========================================================================
+ * AUTENTICACIÓN, RECUPERACIÓN POR EMAIL Y SHELL
  * ========================================================================= */
 
 async function onLoginSubmit(e) {
@@ -186,9 +193,10 @@ async function onLoginSubmit(e) {
   try {
     const usuario = document.getElementById('login-usuario').value.trim();
     const password = document.getElementById('login-password').value;
-    const data = await apiPost('login', { usuario, password });
+    const data = await apiPost('login', { usuario, password }, { blockerText: 'Iniciando sesión...' });
     state.session = data.user;
-    state.cache.config = data.config || {};
+    state.cache.config = Object.assign({}, state.cache.config, data.config || {});
+    applyBrandingUI(state.cache.config);
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(data.user));
     await enterApp();
     showToast('Bienvenido, ' + data.user.Nombre + ' ' + data.user.Apellido, 'success');
@@ -199,31 +207,115 @@ async function onLoginSubmit(e) {
   }
 }
 
+function openForgotPasswordModal() {
+  openModal('Recuperar Contraseña', `
+    <div id="forgot-step-1" class="stack-md">
+      <p class="item-meta">Ingresá tu usuario o correo registrado. Si la cuenta tiene correo asociado, te enviaremos un código de 6 dígitos válido por 15 minutos.</p>
+      <form id="request-reset-form" class="stack-md">
+        <div class="field">
+          <label>Usuario o Correo Electrónico</label>
+          <input id="reset-identifier" type="text" required placeholder="ej. jperez o correo@institucion.edu.ar" />
+        </div>
+        <button id="btn-send-reset-code" type="submit" class="btn btn-primary">Enviar Código por Correo</button>
+      </form>
+      <div style="text-align:center;">
+        <button type="button" class="btn-link" id="btn-already-have-code">Ya tengo un código de verificación</button>
+      </div>
+    </div>
+
+    <div id="forgot-step-2" class="stack-md hidden">
+      <p class="item-meta">Ingresá el código recibido por correo y definí tu nueva contraseña.</p>
+      <form id="confirm-reset-form" class="stack-md">
+        <div class="field">
+          <label>Usuario o Correo Electrónico</label>
+          <input id="confirm-identifier" type="text" required />
+        </div>
+        <div class="row-gap">
+          <div class="field">
+            <label>Código (6 dígitos)</label>
+            <input id="confirm-code" type="text" maxlength="6" pattern="[0-9]{6}" required placeholder="123456" />
+          </div>
+          <div class="field">
+            <label>Nueva Contraseña</label>
+            <input id="confirm-new-pass" type="password" minlength="4" required placeholder="Mínimo 4 caracteres" />
+          </div>
+        </div>
+        <button id="btn-apply-new-pass" type="submit" class="btn btn-success">Actualizar Contraseña</button>
+      </form>
+    </div>
+  `);
+
+  const showStep2 = (ident = '') => {
+    document.getElementById('forgot-step-1').classList.add('hidden');
+    document.getElementById('forgot-step-2').classList.remove('hidden');
+    if (ident) document.getElementById('confirm-identifier').value = ident;
+  };
+
+  document.getElementById('btn-already-have-code').addEventListener('click', () => {
+    showStep2(document.getElementById('reset-identifier').value.trim());
+  });
+
+  document.getElementById('request-reset-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('btn-send-reset-code');
+    const ident = document.getElementById('reset-identifier').value.trim();
+    btn.disabled = true;
+    try {
+      const res = await apiPost('requestPasswordReset', { identifier: ident }, { blockerText: 'Enviando código...' });
+      showToast(res.message || 'Si la cuenta posee correo registrado, se envió un código.', 'success');
+      showStep2(ident);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('confirm-reset-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('btn-apply-new-pass');
+    btn.disabled = true;
+    try {
+      await apiPost('resetPasswordWithCode', {
+        identifier: document.getElementById('confirm-identifier').value.trim(),
+        code: document.getElementById('confirm-code').value.trim(),
+        newPassword: document.getElementById('confirm-new-pass').value
+      }, { blockerText: 'Actualizando contraseña...' });
+      closeModal();
+      showToast('Contraseña actualizada. Ya podés iniciar sesión.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 function logout() {
   state.session = null;
   sessionStorage.removeItem(SESSION_KEY);
   document.getElementById('app-shell').classList.add('hidden');
   document.getElementById('login-view').classList.remove('hidden');
   document.getElementById('login-form').reset();
-  updateInstallButtonsVisibility();
+  applyBrandingUI(state.cache.config || {});
 }
 
 async function enterApp() {
   document.getElementById('login-view').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
-  updateInstallButtonsVisibility();
 
   const u = state.session;
   document.getElementById('topbar-user').textContent = `${u.Apellido}, ${u.Nombre} (LP ${u.LP}) · ${u.Rol.toUpperCase()}`;
 
-  const boot = await apiPost('getBootstrap');
+  const boot = await apiPost('getBootstrap', {}, { blockerText: 'Cargando datos del sistema...' });
   state.bootstrap = boot;
   state.cache.config = boot.config || {};
   state.cache.classrooms = boot.classrooms || [];
   state.cache.subjects = boot.subjects || [];
   state.cache.assignments = boot.assignments || [];
+  applyBrandingUI(state.cache.config);
 
-  const isAdmin = u.Rol.toLowerCase() === 'admin';
+  const isAdmin = String(u.Rol || '').toLowerCase() === 'admin';
   const isClosed = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI';
   const lockBanner = document.getElementById('lock-banner');
   if (isClosed && !isAdmin) {
@@ -240,6 +332,8 @@ async function enterApp() {
 
 function switchTab(tabName) {
   state.activeTab = tabName;
+  state.reportPage = 1;
+  state.studentPage = 1;
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
@@ -257,12 +351,11 @@ function switchTab(tabName) {
     config: '8. Configuración, Exportación y Blanqueo'
   };
   document.getElementById('topbar-title').textContent = titles[tabName] || 'EFSA';
-
   renderCurrentTab();
 }
 
 function renderSectionHeader(sectionTitle) {
-  if (!state.session || state.session.Rol.toLowerCase() !== 'admin') return '';
+  if (!state.session || String(state.session.Rol || '').toLowerCase() !== 'admin') return '';
   return `
     <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
       <div class="card-title" style="margin:0; min-width:0;">${escapeHtml(sectionTitle)}</div>
@@ -302,19 +395,19 @@ async function renderCurrentTab() {
 }
 
 function renderAdminHomeTab(main) {
-  const inst = state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales';
+  const inst = getInstitutionName(state.cache.config);
   const ciclo = state.cache.config.Ciclo_Lectivo || new Date().getFullYear();
 
   const sections = [
-    { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas y credenciales de admin y profesores' },
+    { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas, correos y credenciales' },
     { tab: 'profesores', title: '2. Profesores', desc: 'Aulas y materias asignadas a cada docente' },
-    { tab: 'alumnos', title: '3. Alumnos', desc: 'Aspirantes, carga masiva y detalle de calificaciones' },
+    { tab: 'alumnos', title: '3. Alumnos', desc: 'Altas/bajas, filtros, carga masiva y detalle' },
     { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
     { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
     { tab: 'materias', title: '6. Materias', desc: 'Asignaturas, régimen, promoción y especialidades' },
     { tab: 'prof-notas', title: 'Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
-    { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales a final, mérito, dragoneantes y faltantes' },
-    { tab: 'config', title: '8. Configuración', desc: 'Parámetros, exportar año a PDF y blanqueo anual' }
+    { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
+    { tab: 'config', title: '8. Configuración', desc: 'Escudo, marca, exportar año y blanqueo anual' }
   ];
 
   main.innerHTML = `
@@ -325,7 +418,7 @@ function renderAdminHomeTab(main) {
       </div>
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
         ${sections.map(s => `
-          <button type="button" class="card stack-sm" data-home-nav="${escapeAttr(s.tab)}" style="text-align:left; cursor:pointer; border:1px solid var(--border, rgba(148,163,184,0.25));">
+          <button type="button" class="card stack-sm" data-home-nav="${escapeAttr(s.tab)}" style="text-align:left; cursor:pointer; border:1px solid var(--border);">
             <div class="item-title">${escapeHtml(s.title)}</div>
             <div class="item-meta">${escapeHtml(s.desc)}</div>
           </button>
@@ -348,8 +441,45 @@ function sortByApellidoNombre(a, b) {
   return nomA.localeCompare(nomB, 'es');
 }
 
+function paginateArray(items, page, pageSize = PAGE_SIZE_30) {
+  const totalItems = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const slice = items.slice(start, start + pageSize);
+  return { slice, page: safePage, totalPages, totalItems, start };
+}
+
+function renderPaginationControls(idPrefix, page, totalPages, totalItems) {
+  if (totalItems <= PAGE_SIZE_30) return '';
+  const nums = [];
+  for (let p = 1; p <= totalPages; p++) {
+    nums.push(`<button type="button" class="subtab-btn ${p === page ? 'active' : ''}" data-pg-num="${p}">${p}</button>`);
+  }
+  return `
+    <div id="${idPrefix}" class="pagination-bar">
+      <div class="item-meta">Página ${page} de ${totalPages} (${totalItems} registros · máx. ${PAGE_SIZE_30}/pág.)</div>
+      <div class="row-gap">
+        <button type="button" class="btn btn-secondary btn-sm" data-pg-prev="1" ${page <= 1 ? 'disabled' : ''}>←</button>
+        ${nums.join('')}
+        <button type="button" class="btn btn-secondary btn-sm" data-pg-next="1" ${page >= totalPages ? 'disabled' : ''}>→</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindPaginationControls(container, currentPage, totalPages, onPageChange) {
+  const prev = container.querySelector('[data-pg-prev]');
+  const next = container.querySelector('[data-pg-next]');
+  if (prev) prev.addEventListener('click', () => onPageChange(Math.max(1, currentPage - 1)));
+  if (next) next.addEventListener('click', () => onPageChange(Math.min(totalPages, currentPage + 1)));
+  container.querySelectorAll('[data-pg-num]').forEach(btn => {
+    btn.addEventListener('click', () => onPageChange(Number(btn.dataset.pgNum)));
+  });
+}
+
 /* =========================================================================
- * 1. USUARIOS
+ * 1. USUARIOS (CON EMAIL PARA RECUPERACIÓN)
  * ========================================================================= */
 
 async function renderUsersTab(main) {
@@ -367,7 +497,7 @@ async function renderUsersTab(main) {
           <div class="list-item">
             <div class="item-main">
               <div class="item-title">${escapeHtml(u.Apellido)}, ${escapeHtml(u.Nombre)} · LP ${escapeHtml(u.LP)}</div>
-              <div class="item-meta">Usuario: <strong>${escapeHtml(u.Usuario)}</strong> · Rol: ${escapeHtml(u.Rol)}</div>
+              <div class="item-meta">Usuario: <strong>${escapeHtml(u.Usuario)}</strong> · Rol: ${escapeHtml(u.Rol)}${u.Email ? ` · Correo: ${escapeHtml(u.Email)}` : ' · Sin correo'}</div>
             </div>
             <div class="row-gap">
               <span class="badge ${u.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${u.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
@@ -413,11 +543,15 @@ function openUserForm(user) {
           <input name="Usuario" required value="${escapeAttr(user ? user.Usuario : '')}" />
         </div>
         <div class="field">
-          <label>Contraseña</label>
-          <input name="Password" type="text" required value="${escapeAttr(user ? user.Password : '')}" />
+          <label>Correo Electrónico (recuperación)</label>
+          <input name="Email" type="email" value="${escapeAttr(user ? (user.Email || '') : '')}" placeholder="profesor@institucion.edu.ar" />
         </div>
       </div>
       <div class="row-gap">
+        <div class="field">
+          <label>Contraseña</label>
+          <input name="Password" type="text" required value="${escapeAttr(user ? user.Password : '')}" />
+        </div>
         <div class="field">
           <label>Rol</label>
           <select name="Rol">
@@ -434,7 +568,7 @@ function openUserForm(user) {
         </div>
       </div>
       <div class="row-gap">
-        <button type="submit" class="btn btn-primary">Guardar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-user">Guardar</button>
         ${isEdit ? `<button type="button" class="btn btn-danger" id="btn-del-user">Eliminar</button>` : ''}
       </div>
     </form>
@@ -442,46 +576,51 @@ function openUserForm(user) {
 
   document.getElementById('user-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-user');
+    saveBtn.disabled = true;
     const fd = new FormData(e.target);
     const payload = {
       originalLp: isEdit ? user.LP : '',
       user: Object.fromEntries(fd.entries())
     };
     try {
-      await apiPost('saveUser', payload);
+      await apiPost('saveUser', payload, { blockerText: 'Guardando usuario...' });
       closeModal();
       showToast('Usuario guardado.', 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 
   const delBtn = document.getElementById('btn-del-user');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      delBtn.disabled = true;
       try {
-        await apiPost('deleteUser', { LP: user.LP });
+        await apiPost('deleteUser', { LP: user.LP }, { blockerText: 'Eliminando usuario...' });
         closeModal();
         showToast('Usuario eliminado.', 'success');
         renderCurrentTab();
       } catch (err) {
         showToast(err.message, 'error');
+        delBtn.disabled = false;
       }
     });
   }
 }
 
 /* =========================================================================
- * 2. PROFESORES (VISTA ADMIN: AULAS Y MATERIAS ASIGNADAS)
+ * 2. PROFESORES
  * ========================================================================= */
 
 async function renderProfessorsAdminTab(main) {
   const [users, assignments, classrooms, subjects] = await Promise.all([
-    apiPost('listUsers'),
-    apiPost('listAssignments'),
-    apiPost('listClassrooms'),
-    apiPost('listSubjects')
+    apiPost('listUsers', {}, { block: false }),
+    apiPost('listAssignments', {}, { block: false }),
+    apiPost('listClassrooms', {}, { block: false }),
+    apiPost('listSubjects', {}, { block: false })
   ]);
 
   const aulaMap = {};
@@ -516,7 +655,7 @@ async function renderProfessorsAdminTab(main) {
             <div class="row-gap" style="justify-content:space-between">
               <div>
                 <div class="item-title">${escapeHtml(p.Apellido)}, ${escapeHtml(p.Nombre)} · LP ${escapeHtml(p.LP)}</div>
-                <div class="item-meta">Usuario: ${escapeHtml(p.Usuario)} · ${aulasUnicas.length} aula(s) asignada(s)</div>
+                <div class="item-meta">Usuario: ${escapeHtml(p.Usuario)}${p.Email ? ` · ${escapeHtml(p.Email)}` : ''} · ${aulasUnicas.length} aula(s)</div>
               </div>
               <span class="badge ${p.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${p.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
             </div>
@@ -542,13 +681,13 @@ async function renderProfessorsAdminTab(main) {
 }
 
 /* =========================================================================
- * 3. ALUMNOS (ORDEN ALFABÉTICO + TODAS LAS NOTAS EN EL DETALLE)
+ * 3. ALUMNOS (FILTRO ALTA/BAJA + BLOQUEO CALIFICACIÓN EN BAJA + PAGINACIÓN)
  * ========================================================================= */
 
 async function renderStudentsTab(main) {
   const [studentsRaw, classrooms] = await Promise.all([
-    apiPost('listStudents'),
-    apiPost('listClassrooms')
+    apiPost('listStudents', {}, { block: false }),
+    apiPost('listClassrooms', {}, { block: false })
   ]);
   const students = studentsRaw.slice().sort(sortByApellidoNombre);
   state.cache.students = students;
@@ -563,12 +702,22 @@ async function renderStudentsTab(main) {
       <div class="row-gap">
         <button type="button" class="btn btn-primary" id="btn-new-student">+ Nuevo Aspirante</button>
         <button type="button" class="btn btn-secondary" id="btn-bulk-student">Carga Masiva</button>
+        <div class="field" style="max-width:170px;">
+          <label for="filter-student-status">Estado</label>
+          <select id="filter-student-status">
+            <option value="Todos" ${state.studentStatusFilter === 'Todos' ? 'selected' : ''}>Todos</option>
+            <option value="Alta" ${state.studentStatusFilter === 'Alta' ? 'selected' : ''}>Alta</option>
+            <option value="Baja" ${state.studentStatusFilter === 'Baja' ? 'selected' : ''}>Baja</option>
+          </select>
+        </div>
         <div class="field">
-          <input id="filter-student-aula" type="text" placeholder="Filtrar por aula, LP o apellido..." />
+          <label for="filter-student-aula">Buscar</label>
+          <input id="filter-student-aula" type="text" placeholder="Aula, LP, apellido o especialidad..." />
         </div>
       </div>
 
       <div id="students-list" class="stack-sm"></div>
+      <div id="students-pagination"></div>
     </div>
   `;
 
@@ -576,21 +725,29 @@ async function renderStudentsTab(main) {
 
   const renderFiltered = () => {
     const q = document.getElementById('filter-student-aula').value.trim().toLowerCase();
-    const list = students.filter(s => {
+    const statusFilter = state.studentStatusFilter;
+
+    const filtered = students.filter(s => {
+      const stLower = String(s.Estado || 'Alta').toLowerCase();
+      if (statusFilter === 'Alta' && stLower === 'baja') return false;
+      if (statusFilter === 'Baja' && stLower !== 'baja') return false;
       if (!q) return true;
-      const nomAula = (aulaMap[s.ID_Aula] || s.ID_Aula).toLowerCase();
+      const nomAula = String(aulaMap[s.ID_Aula] || s.ID_Aula || '').toLowerCase();
       return (
-        s.LP.toLowerCase().includes(q) ||
-        s.Apellido.toLowerCase().includes(q) ||
-        s.Nombre.toLowerCase().includes(q) ||
+        String(s.LP || '').toLowerCase().includes(q) ||
+        String(s.Apellido || '').toLowerCase().includes(q) ||
+        String(s.Nombre || '').toLowerCase().includes(q) ||
         nomAula.includes(q) ||
-        s.Especialidad.toLowerCase().includes(q)
+        String(s.Especialidad || '').toLowerCase().includes(q)
       );
     }).sort(sortByApellidoNombre);
 
+    const pg = paginateArray(filtered, state.studentPage, PAGE_SIZE_30);
+    state.studentPage = pg.page;
+
     const container = document.getElementById('students-list');
-    container.innerHTML = list.map(s => {
-      const isBaja = s.Estado.toLowerCase() === 'baja';
+    container.innerHTML = pg.slice.map(s => {
+      const isBaja = String(s.Estado || '').toLowerCase() === 'baja';
       return `
         <div class="list-item clickable" data-detail-student="${escapeAttr(s.LP)}">
           <div class="item-main">
@@ -619,9 +776,26 @@ async function renderStudentsTab(main) {
         openStudentForm(found || null);
       });
     });
+
+    const pgWrap = document.getElementById('students-pagination');
+    pgWrap.innerHTML = renderPaginationControls('students-pg-bar', pg.page, pg.totalPages, pg.totalItems);
+    bindPaginationControls(pgWrap, pg.page, pg.totalPages, nextP => {
+      state.studentPage = nextP;
+      renderFiltered();
+    });
   };
 
-  document.getElementById('filter-student-aula').addEventListener('input', renderFiltered);
+  document.getElementById('filter-student-status').addEventListener('change', e => {
+    state.studentStatusFilter = e.target.value;
+    state.studentPage = 1;
+    renderFiltered();
+  });
+
+  document.getElementById('filter-student-aula').addEventListener('input', () => {
+    state.studentPage = 1;
+    renderFiltered();
+  });
+
   document.getElementById('btn-new-student').addEventListener('click', () => openStudentForm(null));
   document.getElementById('btn-bulk-student').addEventListener('click', openBulkStudentsModal);
   renderFiltered();
@@ -675,7 +849,7 @@ function openStudentForm(student) {
         </div>
       </div>
       <div class="row-gap">
-        <button type="submit" class="btn btn-primary">Guardar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-student">Guardar</button>
         ${isEdit ? `<button type="button" class="btn btn-danger" id="btn-del-student">Eliminar</button>` : ''}
       </div>
     </form>
@@ -683,30 +857,35 @@ function openStudentForm(student) {
 
   document.getElementById('student-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-student');
+    saveBtn.disabled = true;
     const fd = new FormData(e.target);
     try {
       await apiPost('saveStudent', {
         originalLp: isEdit ? student.LP : '',
         student: Object.fromEntries(fd.entries())
-      });
+      }, { blockerText: 'Guardando aspirante...' });
       closeModal();
       showToast('Aspirante guardado.', 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 
   const delBtn = document.getElementById('btn-del-student');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      delBtn.disabled = true;
       try {
-        await apiPost('deleteStudent', { LP: student.LP });
+        await apiPost('deleteStudent', { LP: student.LP }, { blockerText: 'Eliminando aspirante...' });
         closeModal();
         showToast('Aspirante eliminado.', 'success');
         renderCurrentTab();
       } catch (err) {
         showToast(err.message, 'error');
+        delBtn.disabled = false;
       }
     });
   }
@@ -715,15 +894,18 @@ function openStudentForm(student) {
 async function openStudentDetail(lp) {
   openModal('Detalle de Calificaciones del Aspirante', '<div class="card">Consultando todas las notas...</div>');
   try {
-    const info = await apiPost('getStudentAcademicDetail', { LP: lp });
+    const info = await apiPost('getStudentAcademicDetail', { LP: lp }, { blockerText: 'Consultando legajo...' });
     const st = info.student;
-    const statusBadge = info.allApproved
-      ? `<span class="badge badge-ok">Todas las materias aprobadas / promocionadas</span>`
-      : info.hasPendingFinals
-        ? `<span class="badge badge-warn">Debe rendir ${info.pendingFinals.length} examen(es) final(es)</span>`
-        : `<span class="badge badge-info">Cursada en progreso</span>`;
+    const isBaja = String(st.Estado || '').toLowerCase() === 'baja';
+    const statusBadge = isBaja
+      ? `<span class="badge badge-bad">Baja · Sin calificación activa</span>`
+      : info.allApproved
+        ? `<span class="badge badge-ok">Todas las materias aprobadas / promocionadas</span>`
+        : info.hasPendingFinals
+          ? `<span class="badge badge-warn">Debe rendir ${info.pendingFinals.length} examen(es) final(es)</span>`
+          : `<span class="badge badge-info">Cursada en progreso</span>`;
 
-    const finalsHtml = info.hasPendingFinals
+    const finalsHtml = (!isBaja && info.hasPendingFinals)
       ? `<div class="card" style="border-color: var(--warning)">
            <div class="card-title">Materias que debe rendir a final</div>
            <ul class="stack-sm" style="margin:0; padding-left:18px;">
@@ -791,12 +973,14 @@ function openBulkStudentsModal() {
     <form id="bulk-student-form" class="stack-md">
       <p class="item-meta">Pegá filas separadas por coma o tabulación en este orden:<br/><code>LP, Apellido, Nombre, Aula(ID o Nombre), Genero, Estado</code></p>
       <textarea id="bulk-students-text" rows="7" placeholder="3001, Perez, Juan, 101, M, Alta&#10;3002, Gomez, Ana, 101, F, Alta"></textarea>
-      <button type="submit" class="btn btn-primary">Importar Aspirantes</button>
+      <button type="submit" class="btn btn-primary" id="btn-import-bulk">Importar Aspirantes</button>
     </form>
   `);
 
   document.getElementById('bulk-student-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const btn = document.getElementById('btn-import-bulk');
+    btn.disabled = true;
     const lines = document.getElementById('bulk-students-text').value
       .split('\n')
       .map(l => l.trim())
@@ -815,12 +999,13 @@ function openBulkStudentsModal() {
     });
 
     try {
-      const res = await apiPost('bulkSaveStudents', { students });
+      const res = await apiPost('bulkSaveStudents', { students }, { blockerText: 'Importando aspirantes...' });
       closeModal();
       showToast(`Importados: ${res.created} nuevos, ${res.updated} actualizados.`, 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      btn.disabled = false;
     }
   });
 }
@@ -831,17 +1016,17 @@ function openBulkStudentsModal() {
 
 async function renderAssignmentsTab(main) {
   const [assignments, users, classrooms, subjects] = await Promise.all([
-    apiPost('listAssignments'),
-    apiPost('listUsers'),
-    apiPost('listClassrooms'),
-    apiPost('listSubjects')
+    apiPost('listAssignments', {}, { block: false }),
+    apiPost('listUsers', {}, { block: false }),
+    apiPost('listClassrooms', {}, { block: false }),
+    apiPost('listSubjects', {}, { block: false })
   ]);
   state.cache.assignments = assignments;
   state.cache.users = users;
   state.cache.classrooms = classrooms;
   state.cache.subjects = subjects;
 
-  const profs = users.filter(u => u.Rol.toLowerCase() === 'profesor').sort(sortByApellidoNombre);
+  const profs = users.filter(u => String(u.Rol || '').toLowerCase() === 'profesor').sort(sortByApellidoNombre);
   const profMap = {};
   users.forEach(u => { profMap[u.LP] = `${u.Apellido}, ${u.Nombre}`; });
   const aulaMap = {};
@@ -877,7 +1062,7 @@ async function renderAssignmentsTab(main) {
             </select>
           </div>
         </div>
-        <button type="submit" class="btn btn-primary">Asignar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-asg">Asignar</button>
       </form>
 
       <div class="stack-sm">
@@ -898,47 +1083,55 @@ async function renderAssignmentsTab(main) {
 
   document.getElementById('assignment-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-asg');
+    saveBtn.disabled = true;
     const assignment = Object.fromEntries(new FormData(e.target).entries());
     try {
-      await apiPost('saveAssignment', { assignment });
+      await apiPost('saveAssignment', { assignment }, { blockerText: 'Guardando asignación...' });
       showToast('Asignación guardada.', 'success');
       renderCurrentTab();
     } catch (err) {
       if (err.message.includes('Confirme reemplazo')) {
         if (confirm(err.message + '\n\n¿Desea reemplazar al profesor actual?')) {
           try {
-            await apiPost('saveAssignment', { assignment, replaceExisting: true });
+            await apiPost('saveAssignment', { assignment, replaceExisting: true }, { blockerText: 'Reasignando profesor...' });
             showToast('Profesor reasignado.', 'success');
             renderCurrentTab();
           } catch (err2) {
             showToast(err2.message, 'error');
+            saveBtn.disabled = false;
           }
+        } else {
+          saveBtn.disabled = false;
         }
       } else {
         showToast(err.message, 'error');
+        saveBtn.disabled = false;
       }
     }
   });
 
   main.querySelectorAll('[data-del-asg]').forEach(btn => {
     btn.addEventListener('click', async () => {
+      btn.disabled = true;
       try {
-        await apiPost('deleteAssignment', { ID_Asignacion: btn.dataset.delAsg });
+        await apiPost('deleteAssignment', { ID_Asignacion: btn.dataset.delAsg }, { blockerText: 'Quitando asignación...' });
         showToast('Asignación eliminada.', 'success');
         renderCurrentTab();
       } catch (err) {
         showToast(err.message, 'error');
+        btn.disabled = false;
       }
     });
   });
 }
 
 /* =========================================================================
- * 5. AULAS (ID AUTOGENERADO, SIN CAMPO MANUAL)
+ * 5. AULAS
  * ========================================================================= */
 
 async function renderClassroomsTab(main) {
-  const classrooms = await apiPost('listClassrooms');
+  const classrooms = await apiPost('listClassrooms', {}, { block: false });
   state.cache.classrooms = classrooms;
 
   main.innerHTML = `
@@ -998,7 +1191,7 @@ function openClassroomForm(aula) {
         </div>
       </div>
       <div class="row-gap">
-        <button type="submit" class="btn btn-primary">Guardar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-aula">Guardar</button>
         ${isEdit ? `<button type="button" class="btn btn-danger" id="btn-del-aula">Eliminar</button>` : ''}
       </div>
     </form>
@@ -1006,38 +1199,43 @@ function openClassroomForm(aula) {
 
   document.getElementById('aula-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-aula');
+    saveBtn.disabled = true;
     const classroom = Object.fromEntries(new FormData(e.target).entries());
     try {
-      await apiPost('saveClassroom', { originalId: isEdit ? aula.ID_Aula : '', classroom });
+      await apiPost('saveClassroom', { originalId: isEdit ? aula.ID_Aula : '', classroom }, { blockerText: 'Guardando aula...' });
       closeModal();
       showToast('Aula guardada.', 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 
   const delBtn = document.getElementById('btn-del-aula');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      delBtn.disabled = true;
       try {
-        await apiPost('deleteClassroom', { ID_Aula: aula.ID_Aula });
+        await apiPost('deleteClassroom', { ID_Aula: aula.ID_Aula }, { blockerText: 'Eliminando aula...' });
         closeModal();
         showToast('Aula eliminada.', 'success');
         renderCurrentTab();
       } catch (err) {
         showToast(err.message, 'error');
+        delBtn.disabled = false;
       }
     });
   }
 }
 
 /* =========================================================================
- * 6. MATERIAS (ID AUTOGENERADO, SIN CAMPO MANUAL)
+ * 6. MATERIAS
  * ========================================================================= */
 
 async function renderSubjectsTab(main) {
-  const subjects = await apiPost('listSubjects');
+  const subjects = await apiPost('listSubjects', {}, { block: false });
   state.cache.subjects = subjects;
 
   main.innerHTML = `
@@ -1129,7 +1327,7 @@ function openSubjectForm(mat) {
         </select>
       </div>
       <div class="row-gap">
-        <button type="submit" class="btn btn-primary">Guardar</button>
+        <button type="submit" class="btn btn-primary" id="btn-save-mat">Guardar</button>
         ${isEdit ? `<button type="button" class="btn btn-danger" id="btn-del-mat">Eliminar</button>` : ''}
       </div>
     </form>
@@ -1137,34 +1335,39 @@ function openSubjectForm(mat) {
 
   document.getElementById('mat-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-mat');
+    saveBtn.disabled = true;
     const subject = Object.fromEntries(new FormData(e.target).entries());
     try {
-      await apiPost('saveSubject', { originalId: isEdit ? mat.ID_Materia : '', subject });
+      await apiPost('saveSubject', { originalId: isEdit ? mat.ID_Materia : '', subject }, { blockerText: 'Guardando materia...' });
       closeModal();
       showToast('Materia guardada.', 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 
   const delBtn = document.getElementById('btn-del-mat');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      delBtn.disabled = true;
       try {
-        await apiPost('deleteSubject', { ID_Materia: mat.ID_Materia });
+        await apiPost('deleteSubject', { ID_Materia: mat.ID_Materia }, { blockerText: 'Eliminando materia...' });
         closeModal();
         showToast('Materia eliminada.', 'success');
         renderCurrentTab();
       } catch (err) {
         showToast(err.message, 'error');
+        delBtn.disabled = false;
       }
     });
   }
 }
 
 /* =========================================================================
- * CARGA DE CALIFICACIONES (ADMIN Y PROFESOR · PROMEDIOS EN VIVO + EXPORTACIÓN)
+ * CARGA DE CALIFICACIONES (EXCLUYE BAJAS + BLOQUEA SI ES BAJA + PLANILLA AULA)
  * ========================================================================= */
 
 function round3Client(num) {
@@ -1230,12 +1433,12 @@ function computeLiveRow(raw, subject, cfg) {
 
   let condicion = 'Cursando';
   if (!esPromocional) {
-    condicion = 'Final Obligatorio';
+    condicion = 'No promocional';
   } else if (promP1 !== '' && promP2 !== '') {
     if (Number(promP1) < minParcial || Number(promP2) < minParcial || Number(promFinal) < minProm) {
-      condicion = 'Va a Final';
+      condicion = 'No promocional';
     } else {
-      condicion = 'Promocionado';
+      condicion = 'Promocional';
     }
   }
 
@@ -1260,11 +1463,11 @@ function collectCurrentGradesTableData(container, fallbackRows, subjectObj, cfg)
       `${baseRow.Apellido || ''}, ${baseRow.Nombre || ''}`,
       fmt(raw.P1_N1),
       fmt(raw.P1_N2),
-      fmt(raw.P1_Rec),
+      raw.P1_Rec ? fmt(raw.P1_Rec) : '-',
       fmt(live.promP1),
       fmt(raw.P2_N1),
       fmt(raw.P2_N2),
-      fmt(raw.P2_Rec),
+      raw.P2_Rec ? fmt(raw.P2_Rec) : '-',
       fmt(live.promP2),
       fmt(live.promFinal),
       live.condicion
@@ -1275,14 +1478,14 @@ function collectCurrentGradesTableData(container, fallbackRows, subjectObj, cfg)
 }
 
 async function renderGradesTab(main) {
-  const isAdmin = state.session.Rol.toLowerCase() === 'admin';
+  const isAdmin = String(state.session.Rol || '').toLowerCase() === 'admin';
   const isLocked = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI' && !isAdmin;
 
   let optionsHtml = '';
   if (isAdmin) {
     const [classrooms, subjects] = await Promise.all([
-      apiPost('listClassrooms'),
-      apiPost('listSubjects')
+      apiPost('listClassrooms', {}, { block: false }),
+      apiPost('listSubjects', {}, { block: false })
     ]);
     state.cache.classrooms = classrooms;
     state.cache.subjects = subjects;
@@ -1348,11 +1551,12 @@ async function renderGradesTab(main) {
     }
     const [idAula, idMateria] = val.split('::');
     const subjectObj = (state.cache.subjects || []).find(m => m.ID_Materia === idMateria) || { Promocional: 'SI' };
-    container.innerHTML = '<div class="card">Cargando planilla de alumnos...</div>';
+    container.innerHTML = '<div class="card">Cargando planilla de alumnos activos...</div>';
 
     try {
-      const resp = await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria });
+      const resp = await apiPost('getGradesForAssignment', { ID_Aula: idAula, ID_Materia: idMateria }, { blockerText: 'Cargando planilla...' });
       const rows = (resp.rows || [])
+        .filter(r => String(r.Estado || 'Alta').toLowerCase() !== 'baja')
         .sort((a, b) => sortByApellidoNombre({ Apellido: a.Apellido, Nombre: a.Nombre }, { Apellido: b.Apellido, Nombre: b.Nombre }));
       const meta = resp.meta || {};
       state.profSelection = { idAula, idMateria, subject: subjectObj, meta, grades: rows };
@@ -1361,12 +1565,12 @@ async function renderGradesTab(main) {
         <div class="card stack-md">
           <div class="row-gap" style="justify-content:space-between">
             <div>
-              <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos)</div>
-              <div class="item-meta">Escuela: <strong>${escapeHtml(meta.instituto || '')}</strong> · Aula: <strong>${escapeHtml(meta.Nombre_Aula || idAula)}</strong> · Materia: <strong>${escapeHtml(meta.Nombre_Materia || idMateria)}</strong> · Profesor: <strong>${escapeHtml(meta.Profesor || '')}</strong></div>
+              <div class="card-title" style="margin:0">Planilla (${rows.length} alumnos activos)</div>
+              <div class="item-meta">Escuela: <strong>${escapeHtml(meta.instituto || getInstitutionName(state.cache.config))}</strong> · Aula: <strong>${escapeHtml(meta.Nombre_Aula || idAula)}</strong> · Materia: <strong>${escapeHtml(meta.Nombre_Materia || idMateria)}</strong> · Profesor: <strong>${escapeHtml(meta.Profesor || '')}</strong></div>
             </div>
             <div class="row-gap">
               <button type="button" class="btn btn-secondary btn-sm" id="btn-export-course-excel">Exportar Excel</button>
-              <button type="button" class="btn btn-secondary btn-sm" id="btn-export-course-pdf">Exportar PDF</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-export-course-pdf">Planilla Aula PDF</button>
               <button type="button" class="btn btn-success btn-sm" id="btn-save-all-grades" ${isLocked ? 'disabled' : ''}>
                 Guardar Todo
               </button>
@@ -1391,22 +1595,26 @@ async function renderGradesTab(main) {
                 </tr>
               </thead>
               <tbody>
-                ${rows.map((r, idx) => `
-                  <tr data-row-idx="${idx}">
-                    <td>${escapeHtml(r.LP_Alumno)}</td>
-                    <td>${escapeHtml(r.Apellido)}, ${escapeHtml(r.Nombre)}</td>
-                    <td><input class="grade-input" data-f="P1_N1" value="${escapeAttr(r.P1_N1)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P1_N2" value="${escapeAttr(r.P1_N2)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P1_Rec" value="${escapeAttr(r.P1_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td class="cell-p1"><strong>${r.Prom_P1 === '' ? '-' : r.Prom_P1}</strong></td>
-                    <td><input class="grade-input" data-f="P2_N1" value="${escapeAttr(r.P2_N1)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P2_N2" value="${escapeAttr(r.P2_N2)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td><input class="grade-input" data-f="P2_Rec" value="${escapeAttr(r.P2_Rec)}" ${isLocked ? 'disabled' : ''} /></td>
-                    <td class="cell-p2"><strong>${r.Prom_P2 === '' ? '-' : r.Prom_P2}</strong></td>
-                    <td class="cell-pf"><strong>${r.Prom_Final === '' ? '-' : r.Prom_Final}</strong></td>
-                    <td class="cell-cond"><span class="badge badge-info">${escapeHtml(r.Condicion)}</span></td>
-                  </tr>
-                `).join('')}
+                ${rows.map((r, idx) => {
+                  const rowBaja = String(r.Estado || '').toLowerCase() === 'baja';
+                  const dis = isLocked || rowBaja ? 'disabled' : '';
+                  return `
+                    <tr data-row-idx="${idx}">
+                      <td>${escapeHtml(r.LP_Alumno)}</td>
+                      <td>${escapeHtml(r.Apellido)}, ${escapeHtml(r.Nombre)}</td>
+                      <td><input class="grade-input" data-f="P1_N1" value="${escapeAttr(r.P1_N1)}" ${dis} /></td>
+                      <td><input class="grade-input" data-f="P1_N2" value="${escapeAttr(r.P1_N2)}" ${dis} /></td>
+                      <td><input class="grade-input" data-f="P1_Rec" value="${escapeAttr(r.P1_Rec)}" ${dis} /></td>
+                      <td class="cell-p1"><strong>${r.Prom_P1 === '' ? '-' : r.Prom_P1}</strong></td>
+                      <td><input class="grade-input" data-f="P2_N1" value="${escapeAttr(r.P2_N1)}" ${dis} /></td>
+                      <td><input class="grade-input" data-f="P2_N2" value="${escapeAttr(r.P2_N2)}" ${dis} /></td>
+                      <td><input class="grade-input" data-f="P2_Rec" value="${escapeAttr(r.P2_Rec)}" ${dis} /></td>
+                      <td class="cell-p2"><strong>${r.Prom_P2 === '' ? '-' : r.Prom_P2}</strong></td>
+                      <td class="cell-pf"><strong>${r.Prom_Final === '' ? '-' : r.Prom_Final}</strong></td>
+                      <td class="cell-cond"><span class="badge badge-info">${escapeHtml(rowBaja ? 'Baja' : (r.Condicion || 'Cursando'))}</span></td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           </div>
@@ -1433,7 +1641,7 @@ async function renderGradesTab(main) {
       });
 
       const headerLines = [
-        `Escuela: ${meta.instituto || state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales'} · Ciclo Lectivo ${meta.cicloLectivo || ''}`,
+        `Escuela: ${meta.instituto || getInstitutionName(state.cache.config)} · Ciclo Lectivo ${meta.cicloLectivo || state.cache.config.Ciclo_Lectivo || ''}`,
         `Aula: ${meta.Nombre_Aula || idAula}${meta.Especialidad ? ` (${meta.Especialidad})` : ''} · Materia: ${meta.Nombre_Materia || idMateria} · Profesor: ${meta.Profesor || ''}`
       ];
       const safeFile = `Calificaciones_${(meta.Nombre_Aula || idAula)}_${(meta.Nombre_Materia || idMateria)}`.replace(/[^a-zA-Z0-9_-]+/g, '_');
@@ -1444,13 +1652,15 @@ async function renderGradesTab(main) {
       });
 
       document.getElementById('btn-export-course-pdf').addEventListener('click', () => {
-        const { headers, exportRows } = collectCurrentGradesTableData(container, rows, subjectObj, state.cache.config || {});
-        exportTableToPdf(`Calificaciones · ${meta.Nombre_Materia || idMateria}`, headerLines, headers, exportRows);
+        exportAulaSinglePagePdf(container, rows, subjectObj, state.cache.config || {}, meta, idAula, idMateria);
       });
 
       document.getElementById('btn-save-all-grades').addEventListener('click', async () => {
+        const saveBtn = document.getElementById('btn-save-all-grades');
+        saveBtn.disabled = true;
         const items = [];
         container.querySelectorAll('tbody tr').forEach((tr, i) => {
+          if (String(rows[i].Estado || '').toLowerCase() === 'baja') return;
           const item = { LP_Alumno: rows[i].LP_Alumno };
           tr.querySelectorAll('input.grade-input').forEach(inp => {
             item[inp.dataset.f] = inp.value.trim();
@@ -1459,11 +1669,12 @@ async function renderGradesTab(main) {
         });
 
         try {
-          const res = await apiPost('saveGradesBatch', { ID_Materia: idMateria, items });
+          const res = await apiPost('saveGradesBatch', { ID_Materia: idMateria, items }, { blockerText: 'Guardando calificaciones...' });
           showToast(`Calificaciones guardadas (${res.count} registros).`, 'success');
           sel.dispatchEvent(new Event('change'));
         } catch (err) {
           showToast(err.message, 'error');
+          saveBtn.disabled = false;
         }
       });
     } catch (err) {
@@ -1472,8 +1683,144 @@ async function renderGradesTab(main) {
   });
 }
 
+function exportAulaSinglePagePdf(container, rows, subjectObj, cfg, meta, idAula, idMateria) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
+    return;
+  }
+
+  const inst = getInstitutionName(cfg);
+  const escudo = String(cfg.Escudo || '').trim();
+  const issuedAt = formatNowDateTime();
+  const fmt = v => (v === '' || v === null || v === undefined ? '-' : v);
+
+  const bodyRows = [];
+  container.querySelectorAll('tbody tr').forEach((tr, idx) => {
+    const baseRow = rows[idx] || {};
+    const raw = {};
+    tr.querySelectorAll('input.grade-input').forEach(inp => {
+      raw[inp.dataset.f] = inp.value.trim();
+    });
+    const live = computeLiveRow(raw, subjectObj, cfg);
+
+    bodyRows.push(`
+      <tr>
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(baseRow.LP_Alumno || '')}</td>
+        <td>${escapeHtml(`${baseRow.Apellido || ''}, ${baseRow.Nombre || ''}`)}</td>
+        <td class="num">${escapeHtml(fmt(raw.P1_N1))}</td>
+        <td class="num">${escapeHtml(fmt(raw.P1_N2))}</td>
+        <td class="num">${escapeHtml(raw.P1_Rec ? fmt(raw.P1_Rec) : '-')}</td>
+        <td class="num prom-p1-col"><strong>${escapeHtml(fmt(live.promP1))}</strong></td>
+        <td class="num p2-n1-col">${escapeHtml(fmt(raw.P2_N1))}</td>
+        <td class="num">${escapeHtml(fmt(raw.P2_N2))}</td>
+        <td class="num">${escapeHtml(raw.P2_Rec ? fmt(raw.P2_Rec) : '-')}</td>
+        <td class="num"><strong>${escapeHtml(fmt(live.promP2))}</strong></td>
+        <td class="num"><strong>${escapeHtml(fmt(live.promFinal))}</strong></td>
+      </tr>
+    `);
+  });
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Planilla Aula · ${escapeHtml(meta.Nombre_Materia || idMateria)}</title>
+      <style>
+        @page { size: A4 portrait; margin: 10mm; }
+        body { font-family: Arial, sans-serif; margin: 0; color: #0f172a; font-size: 10px; }
+        .full-banner {
+          width: 100%;
+          border-bottom: 2px solid #0f172a;
+          padding-bottom: 6px;
+          margin-bottom: 6px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .banner-escudo { width: 38px; height: 38px; object-fit: contain; }
+        .banner-title { font-size: 14px; font-weight: bold; }
+        .banner-sub { font-size: 9px; color: #475569; }
+        .course-meta {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 5px 8px;
+          background: #f1f5f9;
+          border: 1px solid #cbd5e1;
+          border-radius: 4px;
+          margin-bottom: 8px;
+          font-size: 10px;
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 9.5px; }
+        th, td { border: 1px solid #64748b; padding: 3px 5px; }
+        th { background: #e2e8f0; text-align: left; }
+        .num { text-align: center; }
+        .prom-p1-col { border-right: 2px solid #0f172a; }
+        .p2-n1-col { border-left: 2px solid #0f172a; }
+        .signature-box {
+          margin-top: 24px;
+          display: flex;
+          justify-content: flex-end;
+        }
+        .signature-line {
+          width: 240px;
+          border-top: 1px solid #0f172a;
+          padding-top: 4px;
+          text-align: center;
+          font-size: 10px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="full-banner">
+        ${escudo ? `<img class="banner-escudo" src="${escudo}" alt="Escudo" />` : ''}
+        <div>
+          <div class="banner-title">${escapeHtml(inst)}</div>
+          <div class="banner-sub">Emitido: ${escapeHtml(issuedAt)}</div>
+        </div>
+      </div>
+      <div class="course-meta">
+        <div><strong>Aula:</strong> ${escapeHtml(meta.Nombre_Aula || idAula)} ${meta.Especialidad ? `(${escapeHtml(meta.Especialidad)})` : ''}</div>
+        <div><strong>Asignatura:</strong> ${escapeHtml(meta.Nombre_Materia || idMateria)}</div>
+        <div><strong>Profesor:</strong> ${escapeHtml(meta.Profesor || '')}</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>LP</th>
+            <th>Apellido y Nombre</th>
+            <th class="num">P1 N1</th>
+            <th class="num">P1 N2</th>
+            <th class="num">P1 Rec</th>
+            <th class="num prom-p1-col">Prom P1</th>
+            <th class="num p2-n1-col">P2 N1</th>
+            <th class="num">P2 N2</th>
+            <th class="num">P2 Rec</th>
+            <th class="num">Prom P2</th>
+            <th class="num">Prom Gral</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${bodyRows.join('') || '<tr><td colspan="12">Sin alumnos activos.</td></tr>'}
+        </tbody>
+      </table>
+      <div class="signature-box">
+        <div class="signature-line">Firma del profesor</div>
+      </div>
+      <script>window.onload = function() { window.print(); };<\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
 /* =========================================================================
- * 7. REPORTES (SUBPESTAÑAS + EXPORTACIÓN EXCEL Y PDF CON NOMBRE DE ESCUELA)
+ * 7. REPORTES (INCLUYE BAJAS + PAGINACIÓN 30/PÁG EN PANTALLA E IMPRESIÓN)
  * ========================================================================= */
 
 async function renderReportsTab(main) {
@@ -1485,6 +1832,7 @@ async function renderReportsTab(main) {
         <button type="button" class="subtab-btn ${state.activeReportSubtab === 'merito' ? 'active' : ''}" data-rsub="merito">Orden de Mérito</button>
         <button type="button" class="subtab-btn ${state.activeReportSubtab === 'dragoneantes' ? 'active' : ''}" data-rsub="dragoneantes">Dragoneantes</button>
         <button type="button" class="subtab-btn ${state.activeReportSubtab === 'faltantes' ? 'active' : ''}" data-rsub="faltantes">Notas Faltantes</button>
+        <button type="button" class="subtab-btn ${state.activeReportSubtab === 'bajas' ? 'active' : ''}" data-rsub="bajas">Bajas</button>
       </div>
       <div id="report-output" class="stack-md"><div class="card">Calculando reporte...</div></div>
     </div>
@@ -1492,7 +1840,7 @@ async function renderReportsTab(main) {
 
   bindBackToHomeButtons(main);
 
-  const data = await apiPost('getReports', {});
+  const data = await apiPost('getReports', {}, { blockerText: 'Generando reportes...' });
   state.cache.reports = data;
 
   const paintSubtab = () => {
@@ -1508,28 +1856,19 @@ async function renderReportsTab(main) {
     if (state.activeReportSubtab === 'promocionales') {
       const list = data.promocionalesAFinal || [];
       reportTitle = 'Promocionales a Final';
-      headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Prom P1', 'Prom P2', 'Motivo'];
-      rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Prom_P1 || '-', r.Prom_P2 || '-', r.Motivo]);
-      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'No hay aspirantes en materias promocionales a final.');
-    }
-
-    if (state.activeReportSubtab === 'merito') {
+      headers = ['#', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Prom P1', 'Prom P2', 'Condición'];
+      rows = list.map((r, i) => [i + 1, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, r.Prom_P1 || '-', r.Prom_P2 || '-', r.Condicion || 'No promocional']);
+    } else if (state.activeReportSubtab === 'merito') {
       const list = data.ordenMerito || [];
       reportTitle = 'Orden de Mérito';
       headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio General', 'Materias'];
       rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_General, r.Materias_Evaluadas]);
-      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'Sin datos de promedio general para ordenar.');
-    }
-
-    if (state.activeReportSubtab === 'dragoneantes') {
+    } else if (state.activeReportSubtab === 'dragoneantes') {
       const list = data.dragoneantes || [];
       reportTitle = 'Dragoneantes (1er Período)';
       headers = ['Puesto', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Promedio 1er Período', 'Materias P1'];
       rows = list.map(r => [r.Puesto, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Promedio_P1, r.Materias_P1]);
-      out.innerHTML = renderExportCard(reportTitle, headers, rows) + renderSimpleTable(headers, rows, 'Sin datos del 1er período para ordenar.');
-    }
-
-    if (state.activeReportSubtab === 'faltantes') {
+    } else if (state.activeReportSubtab === 'faltantes') {
       const mapLabels = {
         P1_N1: '1ª Nota del 1er Período',
         P1_N2: '2ª Nota del 1er Período',
@@ -1540,34 +1879,72 @@ async function renderReportsTab(main) {
       const list = (data.faltantesPorNota && data.faltantesPorNota[selectedField]) || [];
       fileBaseName = `Faltantes_${selectedField}`;
       reportTitle = `Notas Faltantes - ${mapLabels[selectedField]}`;
-      headers = ['LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
-      rows = list.map(r => [r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
+      headers = ['#', 'LP', 'Apellido', 'Nombre', 'Aula', 'Especialidad', 'Materia', 'Nota Faltante'];
+      rows = list.map((r, i) => [i + 1, r.LP, r.Apellido, r.Nombre, r.Nombre_Aula, r.Especialidad, r.Nombre_Materia, mapLabels[selectedField]]);
+    } else if (state.activeReportSubtab === 'bajas') {
+      const list = data.bajas || [];
+      reportTitle = 'Aspirantes de Baja';
+      headers = ['#', 'LP', 'Apellido', 'Nombre', 'Género', 'Especialidad', 'Aula'];
+      rows = list.map((r, i) => [i + 1, r.LP, r.Apellido, r.Nombre, r.Genero || '-', r.Especialidad || '-', r.Nombre_Aula || r.ID_Aula || '-']);
+    }
 
-      out.innerHTML = `
-        <div class="card stack-md">
-          <div class="field">
-            <label>Elegir nota a controlar</label>
-            <select id="select-missing-grade">
-              <option value="P1_N1" ${selectedField === 'P1_N1' ? 'selected' : ''}>1ª Nota del 1er Período</option>
-              <option value="P1_N2" ${selectedField === 'P1_N2' ? 'selected' : ''}>2ª Nota del 1er Período</option>
-              <option value="P2_N1" ${selectedField === 'P2_N1' ? 'selected' : ''}>1ª Nota del 2do Período</option>
-              <option value="P2_N2" ${selectedField === 'P2_N2' ? 'selected' : ''}>2ª Nota del 2do Período</option>
-            </select>
-          </div>
+    const pg = paginateArray(rows, state.reportPage, PAGE_SIZE_30);
+    state.reportPage = pg.page;
+
+    const filterSelectorHtml = state.activeReportSubtab === 'faltantes' ? `
+      <div class="field">
+        <label>Elegir nota a controlar</label>
+        <select id="select-missing-grade">
+          <option value="P1_N1" ${state.selectedMissingGrade === 'P1_N1' ? 'selected' : ''}>1ª Nota del 1er Período</option>
+          <option value="P1_N2" ${state.selectedMissingGrade === 'P1_N2' ? 'selected' : ''}>2ª Nota del 1er Período</option>
+          <option value="P2_N1" ${state.selectedMissingGrade === 'P2_N1' ? 'selected' : ''}>1ª Nota del 2do Período</option>
+          <option value="P2_N2" ${state.selectedMissingGrade === 'P2_N2' ? 'selected' : ''}>2ª Nota del 2do Período</option>
+        </select>
+      </div>
+    ` : '';
+
+    out.innerHTML = `
+      <div class="card stack-md">
+        <div class="row-gap" style="justify-content:space-between">
+          <div class="card-title" style="margin:0">${escapeHtml(reportTitle)} (${rows.length})</div>
           <div class="row-gap">
             <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-excel">Exportar Excel</button>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-pdf">Exportar PDF</button>
           </div>
         </div>
-        ${renderSimpleTable(headers, rows, 'A ningún aspirante le falta esta nota.')}
-      `;
+        ${filterSelectorHtml}
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${pg.slice.map(r => `
+                <tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>
+              `).join('') || `<tr><td colspan="${headers.length}">Sin registros para mostrar.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+        <div id="report-pagination-slot"></div>
+      </div>
+    `;
 
-      document.getElementById('select-missing-grade').addEventListener('change', e => {
+    const pgSlot = document.getElementById('report-pagination-slot');
+    pgSlot.innerHTML = renderPaginationControls('rep-pg-bar', pg.page, pg.totalPages, pg.totalItems);
+    bindPaginationControls(pgSlot, pg.page, pg.totalPages, nextP => {
+      state.reportPage = nextP;
+      paintSubtab();
+    });
+
+    const missSel = document.getElementById('select-missing-grade');
+    if (missSel) {
+      missSel.addEventListener('change', e => {
         state.selectedMissingGrade = e.target.value;
+        state.reportPage = 1;
         paintSubtab();
       });
-      bindExportButtons(fileBaseName, reportTitle, headers, rows);
-      return;
     }
 
     bindExportButtons(fileBaseName, reportTitle, headers, rows);
@@ -1576,6 +1953,7 @@ async function renderReportsTab(main) {
   document.querySelectorAll('#report-subtabs .subtab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       state.activeReportSubtab = btn.dataset.rsub;
+      state.reportPage = 1;
       paintSubtab();
     });
   });
@@ -1583,43 +1961,13 @@ async function renderReportsTab(main) {
   paintSubtab();
 }
 
-function renderExportCard(title, headers, rows) {
-  return `
-    <div class="card">
-      <div class="row-gap" style="justify-content:space-between">
-        <div class="card-title" style="margin:0">${escapeHtml(title)} (${rows.length})</div>
-        <div class="row-gap">
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-excel">Exportar Excel</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-pdf">Exportar PDF</button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderSimpleTable(headers, rows, emptyMsg) {
-  return `
-    <div class="card">
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
-          </thead>
-          <tbody>
-            ${rows.map(r => `
-              <tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>
-            `).join('') || `<tr><td colspan="${headers.length}">${escapeHtml(emptyMsg)}</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
 function getSchoolHeaderLines() {
-  const inst = state.cache.config.Nombre_Instituto || 'Escuela de Suboficiales';
+  const inst = getInstitutionName(state.cache.config);
   const ciclo = state.cache.config.Ciclo_Lectivo || '';
-  return [ciclo ? `${inst} · Ciclo Lectivo ${ciclo}` : inst];
+  return [
+    ciclo ? `${inst} · Ciclo Lectivo ${ciclo}` : inst,
+    `Fecha y hora de emisión: ${formatNowDateTime()}`
+  ];
 }
 
 function exportTableToExcel(fileBaseName, headerLines, headers, rows) {
@@ -1656,9 +2004,40 @@ function exportTableToPdf(reportTitle, headerLines, headers, rows) {
     showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
     return;
   }
-  const metaHtml = (headerLines || [])
-    .map(line => `<div class="meta-line">${escapeHtml(line)}</div>`)
-    .join('');
+
+  const inst = getInstitutionName(state.cache.config);
+  const escudo = String((state.cache.config && state.cache.config.Escudo) || '').trim();
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += PAGE_SIZE_30) {
+    chunks.push(rows.slice(i, i + PAGE_SIZE_30));
+  }
+  if (chunks.length === 0) chunks.push([]);
+
+  const pagesHtml = chunks.map((chunk, pageIdx) => {
+    const breakStyle = pageIdx < chunks.length - 1 ? 'page-break-after: always;' : '';
+    const extraMeta = (headerLines || []).slice(1).map(l => `<div class="meta-line">${escapeHtml(l)}</div>`).join('');
+    return `
+      <section class="rep-page" style="${breakStyle}">
+        <div class="doc-header">
+          <div class="brand-row">
+            ${escudo ? `<img class="doc-escudo" src="${escudo}" alt="Escudo" />` : ''}
+            <div>
+              <div class="doc-inst">${escapeHtml(inst)}</div>
+              <h2>${escapeHtml(reportTitle)}</h2>
+            </div>
+          </div>
+          ${extraMeta}
+          <div class="meta-line">Página ${pageIdx + 1} de ${chunks.length}</div>
+        </div>
+        <table>
+          <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${chunk.map(r => `<tr class="keep-row">${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${headers.length}">Sin registros.</td></tr>`}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }).join('');
 
   win.document.write(`
     <!DOCTYPE html>
@@ -1667,24 +2046,23 @@ function exportTableToPdf(reportTitle, headerLines, headers, rows) {
       <meta charset="UTF-8" />
       <title>${escapeHtml(reportTitle)}</title>
       <style>
-        body { font-family: Arial, sans-serif; padding: 20px; color: #0f172a; }
-        .doc-header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 12px; }
-        .meta-line { font-size: 12px; color: #334155; margin-bottom: 3px; }
-        h2 { margin: 4px 0 0 0; font-size: 18px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
+        @page { size: A4 portrait; margin: 12mm; }
+        body { font-family: Arial, sans-serif; margin: 0; color: #0f172a; }
+        .doc-header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 10px; }
+        .brand-row { display: flex; align-items: center; gap: 10px; }
+        .doc-escudo { width: 40px; height: 40px; object-fit: contain; }
+        .doc-inst { font-size: 13px; font-weight: bold; }
+        .meta-line { font-size: 11px; color: #334155; margin-top: 2px; }
+        h2 { margin: 2px 0 0 0; font-size: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        thead { display: table-header-group; }
+        tr.keep-row { break-inside: avoid; page-break-inside: avoid; }
+        th, td { border: 1px solid #cbd5e1; padding: 5px 7px; text-align: left; }
         th { background: #f1f5f9; }
       </style>
     </head>
     <body>
-      <div class="doc-header">
-        ${metaHtml}
-        <h2>${escapeHtml(reportTitle)}</h2>
-      </div>
-      <table>
-        <thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-        <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>
-      </table>
+      ${pagesHtml}
       <script>window.onload = function() { window.print(); };<\/script>
     </body>
     </html>
@@ -1706,18 +2084,95 @@ function bindExportButtons(fileBaseName, reportTitle, headers, rows) {
 }
 
 /* =========================================================================
- * 8. CONFIGURACIÓN, EXPORTAR AÑO Y BLANQUEO ANUAL
+ * 8. CONFIGURACIÓN (ESCUDO VALIDADO + COMPRIMIDO), EXPORTAR AÑO Y BLANQUEO
  * ========================================================================= */
 
+function estimateBase64Bytes(dataUrl) {
+  const idx = String(dataUrl || '').indexOf(',');
+  if (idx === -1) return 0;
+  const b64 = dataUrl.slice(idx + 1);
+  return Math.floor((b64.length * 3) / 4);
+}
+
+function compressShieldFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('No se seleccionó ningún archivo.'));
+    if (!ALLOWED_SHIELD_TYPES.includes(file.type)) {
+      return reject(new Error('Formato no permitido. Solo se aceptan PNG, JPG o WEBP.'));
+    }
+    if (file.size > MAX_SHIELD_RAW_BYTES) {
+      return reject(new Error('El archivo supera el límite máximo de 5 MB.'));
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('El archivo está dañado o no se pudo leer.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('La imagen seleccionada está dañada o corrupta.'));
+      img.onload = () => {
+        try {
+          const maxDim = 256;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+
+          const outMime = file.type === 'image/png' ? 'image/png' : 'image/webp';
+          let quality = 0.82;
+          let dataUrl = canvas.toDataURL(outMime, quality);
+
+          if (outMime === 'image/webp') {
+            while (estimateBase64Bytes(dataUrl) > 95000 && quality > 0.4) {
+              quality -= 0.1;
+              dataUrl = canvas.toDataURL('image/webp', quality);
+            }
+          }
+          if (estimateBase64Bytes(dataUrl) > 160000) {
+            dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+          }
+
+          resolve({
+            dataUrl,
+            bytes: estimateBase64Bytes(dataUrl),
+            width: w,
+            height: h
+          });
+        } catch (err) {
+          reject(new Error('No se pudo comprimir el escudo.'));
+        }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function renderConfigTab(main) {
-  const cfg = await apiPost('getConfig');
+  const cfg = await apiPost('getConfig', {}, { blockerText: 'Cargando configuración...' });
   state.cache.config = cfg;
+  applyBrandingUI(cfg);
+
+  let currentShield = String(cfg.Escudo || '').trim();
+  let shieldRemoved = false;
 
   main.innerHTML = `
     <div class="stack-md">
       ${renderSectionHeader('8. Configuración, Exportación y Blanqueo')}
       <form id="config-form" class="card stack-md">
-        <div class="card-title">Parámetros Globales</div>
+        <div class="card-title">Parámetros Globales e Identidad Institucional</div>
         <div class="field">
           <label>Plataforma_Cerrada (bloquea carga de profesores)</label>
           <select name="Plataforma_Cerrada">
@@ -1740,15 +2195,32 @@ async function renderConfigTab(main) {
           </div>
         </div>
         <div class="field">
-          <label>Nombre_Instituto</label>
-          <input name="Nombre_Instituto" value="${escapeAttr(cfg.Nombre_Instituto || 'Escuela de Suboficiales')}" />
+          <label>Nombre_Instituto (máx. 80 caracteres)</label>
+          <input name="Nombre_Instituto" maxlength="80" value="${escapeAttr(getInstitutionName(cfg))}" />
         </div>
-        <button type="submit" class="btn btn-primary">Guardar Configuración</button>
+
+        <div class="field">
+          <label>Escudo Institucional (PNG, JPG o WEBP · máx. 5 MB)</label>
+          <div class="row-gap">
+            <input id="shield-file-input" type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" />
+            <button type="button" class="btn btn-danger-outline btn-sm" id="btn-clear-shield">Borrar escudo</button>
+          </div>
+          <div id="shield-preview-wrap" class="escudo-preview-box" style="margin-top:6px;">
+            <img id="shield-preview-img" class="escudo-preview-img ${currentShield ? '' : 'hidden'}" ${currentShield ? `src="${currentShield}"` : ''} alt="Vista previa escudo" />
+            <div id="shield-preview-info" class="item-meta">
+              ${currentShield ? `Escudo cargado (${Math.round(estimateBase64Bytes(currentShield) / 1024)} KB)` : 'Sin escudo cargado (se mostrará solo el nombre institucional).'}
+            </div>
+          </div>
+        </div>
+
+        <div class="row-gap">
+          <button type="submit" class="btn btn-primary" id="btn-save-config">Guardar Configuración</button>
+        </div>
       </form>
 
       <div class="card stack-md" style="border-color: var(--primary-hover)">
         <div class="card-title">Exportar Año (Acta Completa en PDF)</div>
-        <p class="item-meta">Genera un PDF con una hoja por cada <strong>Aula + Materia</strong>, incluyendo encabezado con escuela, aula, materia y profesor, y todos los alumnos con sus calificaciones (completando con <strong>Baja</strong> las notas faltantes de alumnos dados de baja).</p>
+        <p class="item-meta">Genera un PDF con una hoja por cada <strong>Aula + Materia</strong>, excluyendo aspirantes en estado <strong>Baja</strong>.</p>
         <div class="field">
           <label>Escribí <strong>EXPORTAR</strong> para confirmar</label>
           <input id="export-year-confirm" type="text" placeholder="EXPORTAR" />
@@ -1760,7 +2232,7 @@ async function renderConfigTab(main) {
             <strong id="export-year-pct">0%</strong>
           </div>
           <div style="width:100%; height:10px; background:rgba(148,163,184,0.25); border-radius:999px; overflow:hidden;">
-            <div id="export-year-bar" style="width:0%; height:100%; background:var(--primary, #2563eb); transition:width 0.25s ease;"></div>
+            <div id="export-year-bar" style="width:0%; height:100%; background:var(--primary); transition:width 0.25s ease;"></div>
           </div>
         </div>
       </div>
@@ -1779,16 +2251,54 @@ async function renderConfigTab(main) {
 
   bindBackToHomeButtons(main);
 
+  const fileInp = document.getElementById('shield-file-input');
+  const prevImg = document.getElementById('shield-preview-img');
+  const prevInfo = document.getElementById('shield-preview-info');
+
+  fileInp.addEventListener('change', async () => {
+    const file = fileInp.files && fileInp.files[0];
+    if (!file) return;
+    try {
+      const comp = await compressShieldFile(file);
+      currentShield = comp.dataUrl;
+      shieldRemoved = false;
+      prevImg.src = comp.dataUrl;
+      prevImg.classList.remove('hidden');
+      prevInfo.textContent = `Listo para guardar (${comp.width}x${comp.height}px · ${Math.max(1, Math.round(comp.bytes / 1024))} KB comprimidos).`;
+      showToast('Escudo validado y comprimido.', 'success');
+    } catch (err) {
+      fileInp.value = '';
+      showToast(err.message, 'error');
+    }
+  });
+
+  document.getElementById('btn-clear-shield').addEventListener('click', () => {
+    currentShield = '';
+    shieldRemoved = true;
+    fileInp.value = '';
+    prevImg.removeAttribute('src');
+    prevImg.classList.add('hidden');
+    prevInfo.textContent = 'Escudo marcado para borrar al guardar.';
+  });
+
   document.getElementById('config-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const config = Object.fromEntries(new FormData(e.target).entries());
+    const saveBtn = document.getElementById('btn-save-config');
+    saveBtn.disabled = true;
+    const rawForm = Object.fromEntries(new FormData(e.target).entries());
+    rawForm.Nombre_Instituto = String(rawForm.Nombre_Instituto || '').trim().slice(0, 80);
+    rawForm.Escudo = currentShield;
+    rawForm.borrarEscudo = shieldRemoved;
+
     try {
-      const updated = await apiPost('saveConfig', { config });
+      const updated = await apiPost('saveConfig', { config: rawForm }, { blockerText: 'Guardando configuración...' });
       state.cache.config = updated;
+      applyBrandingUI(updated);
       showToast('Configuración actualizada.', 'success');
       renderCurrentTab();
     } catch (err) {
       showToast(err.message, 'error');
+      saveBtn.disabled = false;
     }
   });
 
@@ -1822,7 +2332,7 @@ async function renderConfigTab(main) {
     }, 500);
 
     try {
-      const yearData = await apiPost('getYearExportData', { confirmText });
+      const yearData = await apiPost('getYearExportData', { confirmText }, { blockerText: 'Exportando año...' });
       clearInterval(ticker);
       setProgress(55, 'Datos recibidos. Generando actas por aula y materia...');
       await openYearExportPdf(yearData, (p, m) => setProgress(p, m));
@@ -1840,13 +2350,17 @@ async function renderConfigTab(main) {
   });
 
   document.getElementById('btn-blanqueo').addEventListener('click', async () => {
+    const blqBtn = document.getElementById('btn-blanqueo');
+    blqBtn.disabled = true;
     const txt = document.getElementById('blanqueo-confirm').value.trim();
     try {
-      await apiPost('blanqueoAnual', { confirmText: txt });
+      await apiPost('blanqueoAnual', { confirmText: txt }, { blockerText: 'Ejecutando blanqueo anual...' });
       document.getElementById('blanqueo-confirm').value = '';
       showToast('Blanqueo anual ejecutado con éxito.', 'success');
     } catch (err) {
       showToast(err.message, 'error');
+    } finally {
+      blqBtn.disabled = false;
     }
   });
 }
@@ -1863,15 +2377,17 @@ async function openYearExportPdf(yearData, onProgress = null) {
   }
 
   const fmtCell = val => (val === '' || val === null || val === undefined ? '-' : val);
+  const issuedAt = formatNowDateTime();
   const pages = [];
 
   for (let idx = 0; idx < actas.length; idx++) {
     const acta = actas[idx];
+    const alumnosActivos = (acta.alumnos || []).filter(al => String(al.Estado || 'Alta').toLowerCase() !== 'baja');
     const pageBreakStyle = idx < actas.length - 1 ? 'page-break-after: always;' : '';
     pages.push(`
       <div class="acta-page" style="${pageBreakStyle}">
         <div class="acta-header">
-          <div class="instituto">${escapeHtml(acta.instituto)} · Ciclo Lectivo ${escapeHtml(acta.cicloLectivo)}</div>
+          <div class="instituto">${escapeHtml(acta.instituto)} · Ciclo Lectivo ${escapeHtml(acta.cicloLectivo)} · Emitido: ${escapeHtml(issuedAt)}</div>
           <div class="meta-grid">
             <div><strong>Aula:</strong> ${escapeHtml(acta.Nombre_Aula)} (${escapeHtml(acta.Especialidad)})</div>
             <div><strong>Materia:</strong> ${escapeHtml(acta.Nombre_Materia)}</div>
@@ -1896,22 +2412,22 @@ async function openYearExportPdf(yearData, onProgress = null) {
             </tr>
           </thead>
           <tbody>
-            ${acta.alumnos.map(al => `
+            ${alumnosActivos.map(al => `
               <tr>
                 <td>${escapeHtml(al.LP)}</td>
                 <td>${escapeHtml(al.Apellido_Nombre)}</td>
                 <td>${escapeHtml(fmtCell(al.P1_N1))}</td>
                 <td>${escapeHtml(fmtCell(al.P1_N2))}</td>
-                <td>${escapeHtml(fmtCell(al.P1_Rec))}</td>
+                <td>${escapeHtml(al.P1_Rec ? fmtCell(al.P1_Rec) : '-')}</td>
                 <td><strong>${escapeHtml(fmtCell(al.Prom_P1))}</strong></td>
                 <td>${escapeHtml(fmtCell(al.P2_N1))}</td>
                 <td>${escapeHtml(fmtCell(al.P2_N2))}</td>
-                <td>${escapeHtml(fmtCell(al.P2_Rec))}</td>
+                <td>${escapeHtml(al.P2_Rec ? fmtCell(al.P2_Rec) : '-')}</td>
                 <td><strong>${escapeHtml(fmtCell(al.Prom_P2))}</strong></td>
                 <td><strong>${escapeHtml(fmtCell(al.Prom_Final))}</strong></td>
                 <td>${escapeHtml(fmtCell(al.Condicion))}</td>
               </tr>
-            `).join('') || '<tr><td colspan="12">Sin alumnos registrados en esta aula.</td></tr>'}
+            `).join('') || '<tr><td colspan="12">Sin alumnos activos en esta aula.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1935,14 +2451,12 @@ async function openYearExportPdf(yearData, onProgress = null) {
       <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 14px; color: #0f172a; }
         .acta-header { border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 10px; }
-        .instituto { font-size: 15px; font-weight: bold; margin-bottom: 6px; }
+        .instituto { font-size: 13px; font-weight: bold; margin-bottom: 6px; }
         .meta-grid { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; }
         table { width: 100%; border-collapse: collapse; font-size: 11px; }
         th, td { border: 1px solid #94a3b8; padding: 4px 6px; text-align: left; }
         th { background: #e2e8f0; }
-        @media print {
-          body { padding: 0; }
-        }
+        @media print { body { padding: 0; } }
       </style>
     </head>
     <body>
