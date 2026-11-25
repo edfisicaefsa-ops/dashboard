@@ -392,10 +392,10 @@ function renderAdminHomeTab(main) {
     { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
     { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
     { tab: 'materias', title: '6. Materias', desc: 'Asignaturas, régimen, promoción y especialidades' },
-    { tab: 'chapero', title: 'Chapero', desc: 'Horarios semanales por aula y exportación PDF' },
-    { tab: 'prof-notas', title: 'Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
-    { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
-    { tab: 'config', title: '8. Configuración', desc: 'Escudo, horarios, recuperación, exportar año y blanqueo' }
+    { tab: 'chapero', title: '7. Chapero', desc: 'Horarios semanales por aula y exportación PDF' },
+    { tab: 'prof-notas', title: '8. Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
+    { tab: 'reportes', title: '9. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
+    { tab: 'config', title: '10. Configuración', desc: 'Escudo, horarios, recuperación, exportar año y blanqueo' }
   ];
 
   main.innerHTML = `
