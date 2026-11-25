@@ -2,7 +2,7 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4
 const SESSION_KEY = 'efsa_session_v1';
 const PAGE_SIZE_30 = 30;
 const ALLOWED_SHIELD_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const MAX_SHIELD_RAW_BYTES = 5 * 1024 * 1024; // 5 MB antes de comprimir
+const MAX_SHIELD_RAW_BYTES = 5 * 1024 * 1024;
 
 const state = {
   session: null,
@@ -57,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('login-form').addEventListener('submit', onLoginSubmit);
   document.getElementById('btn-forgot-password').addEventListener('click', openForgotPasswordModal);
+  document.getElementById('btn-change-password').addEventListener('click', () => switchTab('prof-password'));
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-close-modal').addEventListener('click', closeModal);
   document.getElementById('modal-backdrop').addEventListener('click', e => {
@@ -131,7 +132,7 @@ async function apiPost(action, payload = {}, opts = {}) {
 }
 
 /* =========================================================================
- * MARCA INSTITUCIONAL Y ESCUDO (CON FALLBACK LIMPIO)
+ * MARCA INSTITUCIONAL Y ESCUDO
  * ========================================================================= */
 
 function getInstitutionName(cfg = {}) {
@@ -294,6 +295,7 @@ function openForgotPasswordModal() {
 function logout() {
   state.session = null;
   sessionStorage.removeItem(SESSION_KEY);
+  document.getElementById('btn-change-password').classList.add('hidden');
   document.getElementById('app-shell').classList.add('hidden');
   document.getElementById('login-view').classList.remove('hidden');
   document.getElementById('login-form').reset();
@@ -305,7 +307,15 @@ async function enterApp() {
   document.getElementById('app-shell').classList.remove('hidden');
 
   const u = state.session;
+  const isAdmin = String(u.Rol || '').toLowerCase() === 'admin';
   document.getElementById('topbar-user').textContent = `${u.Apellido}, ${u.Nombre} (LP ${u.LP}) · ${u.Rol.toUpperCase()}`;
+
+  const btnChangePwd = document.getElementById('btn-change-password');
+  if (isAdmin) {
+    btnChangePwd.classList.add('hidden');
+  } else {
+    btnChangePwd.classList.remove('hidden');
+  }
 
   const boot = await apiPost('getBootstrap', {}, { blockerText: 'Cargando datos del sistema...' });
   state.bootstrap = boot;
@@ -315,7 +325,6 @@ async function enterApp() {
   state.cache.assignments = boot.assignments || [];
   applyBrandingUI(state.cache.config);
 
-  const isAdmin = String(u.Rol || '').toLowerCase() === 'admin';
   const isClosed = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI';
   const lockBanner = document.getElementById('lock-banner');
   if (isClosed && !isAdmin) {
@@ -337,29 +346,21 @@ function switchTab(tabName) {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
-
-  const titles = {
-    home: 'Inicio · Panel de Administración',
-    usuarios: '1. Usuarios y Credenciales',
-    profesores: '2. Profesores y Aulas Asignadas',
-    alumnos: '3. Alumnos y Cursada',
-    asignaciones: '4. Asignaciones (Aula + Materia)',
-    aulas: '5. Aulas',
-    materias: '6. Materias',
-    'prof-notas': 'Carga de Calificaciones',
-    reportes: '7. Reportes Académicos',
-    config: '8. Configuración, Exportación y Blanqueo'
-  };
-  document.getElementById('topbar-title').textContent = titles[tabName] || 'EFSA';
   renderCurrentTab();
 }
 
-function renderSectionHeader(sectionTitle) {
-  if (!state.session || String(state.session.Rol || '').toLowerCase() !== 'admin') return '';
+function renderSectionHeader(sectionTitle, opts = {}) {
+  const isAdmin = state.session && String(state.session.Rol || '').toLowerCase() === 'admin';
+  const backButtonHtml = opts.backAction
+    ? `<button type="button" class="btn btn-secondary btn-sm" id="${escapeAttr(opts.backId || 'btn-sec-back')}" style="white-space:nowrap; flex-shrink:0;">← ${escapeHtml(opts.backLabel || 'Volver')}</button>`
+    : isAdmin
+      ? `<button type="button" class="btn btn-secondary btn-sm" data-go-home="true" style="white-space:nowrap; flex-shrink:0;">← Volver al inicio</button>`
+      : '';
+
   return `
     <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
       <div class="card-title" style="margin:0; min-width:0;">${escapeHtml(sectionTitle)}</div>
-      <button type="button" class="btn btn-secondary btn-sm" data-go-home="true" style="white-space:nowrap; flex-shrink:0;">← Volver al inicio</button>
+      ${backButtonHtml}
     </div>
   `;
 }
@@ -384,6 +385,7 @@ async function renderCurrentTab() {
       case 'aulas': return await renderClassroomsTab(main);
       case 'materias': return await renderSubjectsTab(main);
       case 'prof-notas': return await renderGradesTab(main);
+      case 'prof-password': return renderProfessorChangePasswordTab(main);
       case 'reportes': return await renderReportsTab(main);
       case 'config': return await renderConfigTab(main);
     }
@@ -400,7 +402,7 @@ function renderAdminHomeTab(main) {
 
   const sections = [
     { tab: 'usuarios', title: '1. Usuarios', desc: 'Altas, bajas, correos y credenciales' },
-    { tab: 'profesores', title: '2. Profesores', desc: 'Aulas y materias asignadas a cada docente' },
+    { tab: 'profesores', title: '2. Profesores', desc: 'Buscar por apellido, ver y exportar designaciones' },
     { tab: 'alumnos', title: '3. Alumnos', desc: 'Altas/bajas, filtros, carga masiva y detalle' },
     { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
     { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
@@ -412,13 +414,14 @@ function renderAdminHomeTab(main) {
 
   main.innerHTML = `
     <div class="stack-md">
+      ${renderSectionHeader('Inicio · Panel de Administración')}
       <div class="card">
         <div class="card-title" style="margin:0">${escapeHtml(inst)}</div>
         <div class="item-meta">Ciclo Lectivo ${escapeHtml(ciclo)} · Elegí una sección para comenzar</div>
       </div>
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
         ${sections.map(s => `
-          <button type="button" class="card stack-sm" data-home-nav="${escapeAttr(s.tab)}" style="text-align:left; cursor:pointer; border:1px solid var(--border);">
+          <button type="button" class="card stack-sm home-card-btn" data-home-nav="${escapeAttr(s.tab)}">
             <div class="item-title">${escapeHtml(s.title)}</div>
             <div class="item-meta">${escapeHtml(s.desc)}</div>
           </button>
@@ -427,8 +430,61 @@ function renderAdminHomeTab(main) {
     </div>
   `;
 
+  bindBackToHomeButtons(main);
   main.querySelectorAll('[data-home-nav]').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.homeNav));
+  });
+}
+
+function renderProfessorChangePasswordTab(main) {
+  main.innerHTML = `
+    <div class="stack-md">
+      ${renderSectionHeader('Cambiar Contraseña', {
+        backAction: true,
+        backId: 'btn-back-to-prof-grades',
+        backLabel: 'Volver a Carga de calificaciones'
+      })}
+      <form id="prof-change-pwd-form" class="card stack-md" style="max-width:460px;">
+        <div class="card-title">Actualizar mi contraseña</div>
+        <div class="field">
+          <label for="pwd-current">Contraseña actual</label>
+          <input id="pwd-current" type="password" required autocomplete="current-password" />
+        </div>
+        <div class="field">
+          <label for="pwd-next">Nueva contraseña</label>
+          <input id="pwd-next" type="password" minlength="4" required autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="pwd-confirm">Confirmar nueva contraseña</label>
+          <input id="pwd-confirm" type="password" minlength="4" required autocomplete="new-password" />
+        </div>
+        <button type="submit" class="btn btn-primary" id="btn-submit-change-pwd">Guardar nueva contraseña</button>
+      </form>
+    </div>
+  `;
+
+  document.getElementById('btn-back-to-prof-grades').addEventListener('click', () => switchTab('prof-notas'));
+
+  document.getElementById('prof-change-pwd-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const cur = document.getElementById('pwd-current').value;
+    const next = document.getElementById('pwd-next').value;
+    const conf = document.getElementById('pwd-confirm').value;
+    if (next !== conf) {
+      showToast('La nueva contraseña y su confirmación no coinciden.', 'error');
+      return;
+    }
+    const btn = document.getElementById('btn-submit-change-pwd');
+    btn.disabled = true;
+    try {
+      await apiPost('changeOwnPassword', { currentPassword: cur, newPassword: next }, { blockerText: 'Actualizando contraseña...' });
+      e.target.reset();
+      showToast('Contraseña actualizada con éxito.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
@@ -479,7 +535,7 @@ function bindPaginationControls(container, currentPage, totalPages, onPageChange
 }
 
 /* =========================================================================
- * 1. USUARIOS (CON EMAIL PARA RECUPERACIÓN)
+ * 1. USUARIOS
  * ========================================================================= */
 
 async function renderUsersTab(main) {
@@ -612,7 +668,7 @@ function openUserForm(user) {
 }
 
 /* =========================================================================
- * 2. PROFESORES
+ * 2. PROFESORES (BUSCADOR POR APELLIDO + DETALLE AL CLICK + EXPORTAR)
  * ========================================================================= */
 
 async function renderProfessorsAdminTab(main) {
@@ -632,52 +688,109 @@ async function renderProfessorsAdminTab(main) {
     .filter(u => String(u.Rol || '').toLowerCase() === 'profesor')
     .sort(sortByApellidoNombre);
 
+  const getDesignationsForProf = lp => {
+    return assignments
+      .filter(a => a.LP_Profesor === lp)
+      .map(a => {
+        const c = aulaMap[a.ID_Aula];
+        const m = matMap[a.ID_Materia];
+        return {
+          ID_Asignacion: a.ID_Asignacion,
+          ID_Aula: a.ID_Aula,
+          Nombre_Aula: c ? c.Nombre_Aula : a.ID_Aula,
+          Especialidad: c ? c.Especialidad : '',
+          ID_Materia: a.ID_Materia,
+          Nombre_Materia: m ? m.Nombre_Materia : a.ID_Materia,
+          Regimen: m ? m.Regimen : ''
+        };
+      });
+  };
+
   main.innerHTML = `
     <div class="stack-md">
       ${renderSectionHeader('2. Profesores y Aulas Asignadas')}
-      ${profs.map(p => {
-        const myAsg = assignments.filter(a => a.LP_Profesor === p.LP);
-        const aulasUnicas = [...new Set(myAsg.map(a => a.ID_Aula))].map(idAula => {
-          const c = aulaMap[idAula];
-          const materiasDelAula = myAsg
-            .filter(a => a.ID_Aula === idAula)
-            .map(a => (matMap[a.ID_Materia] ? matMap[a.ID_Materia].Nombre_Materia : a.ID_Materia));
-          return {
-            idAula,
-            nombreAula: c ? c.Nombre_Aula : idAula,
-            especialidad: c ? c.Especialidad : '',
-            materias: materiasDelAula
-          };
-        });
-
-        return `
-          <div class="card stack-sm">
-            <div class="row-gap" style="justify-content:space-between">
-              <div>
-                <div class="item-title">${escapeHtml(p.Apellido)}, ${escapeHtml(p.Nombre)} · LP ${escapeHtml(p.LP)}</div>
-                <div class="item-meta">Usuario: ${escapeHtml(p.Usuario)}${p.Email ? ` · ${escapeHtml(p.Email)}` : ''} · ${aulasUnicas.length} aula(s)</div>
-              </div>
-              <span class="badge ${p.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${p.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
-            </div>
-            ${aulasUnicas.length > 0 ? `
-              <div class="stack-sm" style="margin-top:8px;">
-                ${aulasUnicas.map(au => `
-                  <div class="list-item" style="background: var(--bg);">
-                    <div class="item-main">
-                      <div class="item-title">Aula ${escapeHtml(au.nombreAula)} ${au.especialidad ? `(${escapeHtml(au.especialidad)})` : ''}</div>
-                      <div class="item-meta">Materias: ${escapeHtml(au.materias.join(', '))}</div>
-                    </div>
-                  </div>
-                `).join('')}
-              </div>
-            ` : '<div class="item-meta">Sin aulas asignadas actualmente.</div>'}
-          </div>
-        `;
-      }).join('') || '<div class="card">No hay profesores registrados.</div>'}
+      <div class="card">
+        <div class="field">
+          <label for="filter-prof-apellido">Buscar profesor por apellido</label>
+          <input id="filter-prof-apellido" type="text" placeholder="Escribí un apellido..." />
+        </div>
+      </div>
+      <div id="profs-list" class="stack-sm"></div>
     </div>
   `;
 
   bindBackToHomeButtons(main);
+
+  const paintProfs = () => {
+    const q = document.getElementById('filter-prof-apellido').value.trim().toLowerCase();
+    const filtered = profs.filter(p => !q || String(p.Apellido || '').toLowerCase().includes(q));
+    const listEl = document.getElementById('profs-list');
+
+    listEl.innerHTML = filtered.map(p => `
+      <div class="list-item clickable" data-open-prof="${escapeAttr(p.LP)}">
+        <div class="item-main">
+          <div class="item-title">${escapeHtml(p.Apellido)}, ${escapeHtml(p.Nombre)} · LP ${escapeHtml(p.LP)}</div>
+          <div class="item-meta">Usuario: <strong>${escapeHtml(p.Usuario)}</strong>${p.Email ? ` · Correo: ${escapeHtml(p.Email)}` : ''}</div>
+        </div>
+        <span class="badge ${p.Activo === 'SI' ? 'badge-ok' : 'badge-bad'}">${p.Activo === 'SI' ? 'Activo' : 'Inactivo'}</span>
+      </div>
+    `).join('') || '<div class="card">No se encontraron profesores con ese apellido.</div>';
+
+    listEl.querySelectorAll('[data-open-prof]').forEach(row => {
+      row.addEventListener('click', () => {
+        const prof = profs.find(x => x.LP === row.dataset.openProf);
+        if (!prof) return;
+        const desigs = getDesignationsForProf(prof.LP);
+        openProfessorDesignationsModal(prof, desigs);
+      });
+    });
+  };
+
+  document.getElementById('filter-prof-apellido').addEventListener('input', paintProfs);
+  paintProfs();
+}
+
+function openProfessorDesignationsModal(prof, desigs) {
+  const headers = ['ID Asignación', 'Aula', 'Especialidad', 'Materia', 'Régimen'];
+  const rows = desigs.map(d => [
+    d.ID_Asignacion,
+    d.Nombre_Aula,
+    d.Especialidad || '-',
+    d.Nombre_Materia,
+    d.Regimen || '-'
+  ]);
+  const title = `Designaciones · ${prof.Apellido}, ${prof.Nombre} (LP ${prof.LP})`;
+  const safeBase = `Designaciones_${prof.Apellido}_${prof.LP}`.replace(/[^a-zA-Z0-9_-]+/g, '_');
+
+  openModal(title, `
+    <div class="stack-md">
+      <div class="row-gap" style="justify-content:space-between;">
+        <div class="item-meta">Total de designaciones: <strong>${desigs.length}</strong></div>
+        <div class="row-gap">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-prof-excel">Exportar Excel</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-exp-prof-pdf">Exportar PDF</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${headers.length}">Sin designaciones asignadas.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `);
+
+  document.getElementById('btn-exp-prof-excel').addEventListener('click', () => {
+    exportTableToExcel(safeBase, [...getSchoolHeaderLines(), `Profesor: ${prof.Apellido}, ${prof.Nombre} · LP ${prof.LP}`], headers, rows);
+  });
+
+  document.getElementById('btn-exp-prof-pdf').addEventListener('click', () => {
+    exportTableToPdf(title, [...getSchoolHeaderLines(), `Profesor: ${prof.Apellido}, ${prof.Nombre} · LP ${prof.LP}`], headers, rows);
+  });
 }
 
 /* =========================================================================
@@ -2150,7 +2263,7 @@ function compressShieldFile(file) {
             width: w,
             height: h
           });
-        } catch (err) {
+        } catch (_) {
           reject(new Error('No se pudo comprimir el escudo.'));
         }
       };

@@ -98,6 +98,7 @@ body {
   font-size: 18px;
   font-weight: 800;
   line-height: 1.25;
+  color: var(--text);
   max-width: 28ch;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -165,17 +166,12 @@ body {
 }
 
 .topbar-instituto {
-  font-size: 12px;
-  font-weight: 700;
-  color: #93c5fd;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.topbar-title {
-  font-weight: 700;
-  font-size: 16px;
 }
 
 .topbar-meta {
@@ -198,17 +194,33 @@ body {
   gap: 14px;
 }
 
+/* Tarjetas de inicio admin unificadas */
+.home-card-btn {
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.home-card-btn:hover {
+  border-color: var(--primary);
+  background: var(--surface-2);
+}
+
 /* Cards & Lists */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
+  color: var(--text);
 }
 
 .card-title {
   font-size: 16px;
   font-weight: 700;
+  color: var(--text);
   margin-bottom: 8px;
 }
 
@@ -240,6 +252,7 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  color: var(--text);
 }
 
 .list-item.clickable {
@@ -259,6 +272,7 @@ body {
 .item-title {
   font-weight: 700;
   font-size: 15px;
+  color: var(--text);
 }
 
 .item-meta {
@@ -370,6 +384,7 @@ input:focus, select:focus, textarea:focus {
 
 .btn-danger {
   background: var(--danger);
+  color: #ffffff;
 }
 
 .btn-danger-outline {
@@ -477,6 +492,7 @@ th {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
+  color: var(--text);
 }
 
 .modal-header {
