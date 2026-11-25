@@ -1,4 +1,4 @@
-const CACHE_NAME = 'efsa-academico-v2026-11-25-2';
+const CACHE_NAME = 'efsa-academico-v2026-11-25-3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

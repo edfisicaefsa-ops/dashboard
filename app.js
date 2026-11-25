@@ -1,8 +1,11 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycbw5GwPSGhBMHd5Q6P1dcdb4XSYoZFUrvr3EIjZZlRLK_N8KNZKmeQNH6ceK_FYBEJwD/exec';
 const SESSION_KEY = 'efsa_session_v1';
+const BRANDING_KEY = 'efsa_branding_v1';
 const PAGE_SIZE_30 = 30;
 const ALLOWED_SHIELD_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_SHIELD_RAW_BYTES = 5 * 1024 * 1024;
+const CHAPERO_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+const DEFAULT_RECOVERY_MSG = 'Si desea recuperar su contraseña comunicarse con la Div. Estudios.';
 
 const state = {
   session: null,
@@ -13,6 +16,7 @@ const state = {
   studentStatusFilter: 'Todos',
   reportPage: 1,
   studentPage: 1,
+  selectedChaperoAulaId: '',
   cache: {
     users: [],
     classrooms: [],
@@ -68,7 +72,8 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  applyBrandingUI(state.cache.config || {});
+  loadCachedBranding();
+  refreshPublicBranding();
 
   const saved = sessionStorage.getItem(SESSION_KEY);
   if (saved) {
@@ -90,14 +95,22 @@ function showToast(msg, type = 'info') {
   setTimeout(() => el.remove(), 3500);
 }
 
-function openModal(title, htmlContent) {
+function openModal(title, htmlContent, opts = {}) {
+  const backdrop = document.getElementById('modal-backdrop');
+  const card = document.getElementById('modal-card');
+  backdrop.classList.toggle('translucent-backdrop', Boolean(opts.translucent));
+  card.classList.toggle('translucent-card', Boolean(opts.translucent));
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = htmlContent;
-  document.getElementById('modal-backdrop').classList.remove('hidden');
+  backdrop.classList.remove('hidden');
 }
 
 function closeModal() {
-  document.getElementById('modal-backdrop').classList.add('hidden');
+  const backdrop = document.getElementById('modal-backdrop');
+  const card = document.getElementById('modal-card');
+  backdrop.classList.add('hidden');
+  backdrop.classList.remove('translucent-backdrop');
+  card.classList.remove('translucent-card');
   document.getElementById('modal-body').innerHTML = '';
 }
 
@@ -132,12 +145,50 @@ async function apiPost(action, payload = {}, opts = {}) {
 }
 
 /* =========================================================================
- * MARCA INSTITUCIONAL Y ESCUDO
+ * MARCA INSTITUCIONAL Y ESCUDO SIEMPRE VISIBLE
  * ========================================================================= */
 
 function getInstitutionName(cfg = {}) {
   const raw = String(cfg.Nombre_Instituto || '').trim();
   return (raw || 'Escuela de Suboficiales').slice(0, 80);
+}
+
+function getRecoveryMessage(cfg = {}) {
+  const raw = String(cfg.Mensaje_Recuperacion || '').trim();
+  return raw || DEFAULT_RECOVERY_MSG;
+}
+
+function persistBranding(cfg = {}) {
+  try {
+    const payload = {
+      Nombre_Instituto: getInstitutionName(cfg),
+      Escudo: String(cfg.Escudo || '').trim(),
+      Mensaje_Recuperacion: getRecoveryMessage(cfg)
+    };
+    localStorage.setItem(BRANDING_KEY, JSON.stringify(payload));
+  } catch (_) {}
+}
+
+function loadCachedBranding() {
+  try {
+    const raw = localStorage.getItem(BRANDING_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      state.cache.config = Object.assign({}, state.cache.config, parsed);
+    }
+  } catch (_) {}
+  applyBrandingUI(state.cache.config || {});
+}
+
+async function refreshPublicBranding() {
+  try {
+    const pub = await apiPost('getPublicBranding', {}, { block: false });
+    if (pub) {
+      state.cache.config = Object.assign({}, state.cache.config, pub);
+      persistBranding(state.cache.config);
+      applyBrandingUI(state.cache.config);
+    }
+  } catch (_) {}
 }
 
 function applyShieldImage(imgEl, escudoData) {
@@ -156,6 +207,9 @@ function applyShieldImage(imgEl, escudoData) {
     imgEl.classList.remove('hidden');
   };
   imgEl.src = src;
+  if (imgEl.complete && imgEl.naturalWidth > 0) {
+    imgEl.classList.remove('hidden');
+  }
 }
 
 function applyBrandingUI(cfg = {}) {
@@ -184,7 +238,7 @@ function formatNowDateTime() {
 }
 
 /* =========================================================================
- * AUTENTICACIÓN, RECUPERACIÓN POR EMAIL Y SHELL
+ * AUTENTICACIÓN, POPUP TRANSPARENTE DE RECUPERACIÓN Y SHELL
  * ========================================================================= */
 
 async function onLoginSubmit(e) {
@@ -197,6 +251,7 @@ async function onLoginSubmit(e) {
     const data = await apiPost('login', { usuario, password }, { blockerText: 'Iniciando sesión...' });
     state.session = data.user;
     state.cache.config = Object.assign({}, state.cache.config, data.config || {});
+    persistBranding(state.cache.config);
     applyBrandingUI(state.cache.config);
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(data.user));
     await enterApp();
@@ -209,87 +264,12 @@ async function onLoginSubmit(e) {
 }
 
 function openForgotPasswordModal() {
-  openModal('Recuperar Contraseña', `
-    <div id="forgot-step-1" class="stack-md">
-      <p class="item-meta">Ingresá tu usuario o correo registrado. Si la cuenta tiene correo asociado, te enviaremos un código de 6 dígitos válido por 15 minutos.</p>
-      <form id="request-reset-form" class="stack-md">
-        <div class="field">
-          <label>Usuario o Correo Electrónico</label>
-          <input id="reset-identifier" type="text" required placeholder="ej. jperez o correo@institucion.edu.ar" />
-        </div>
-        <button id="btn-send-reset-code" type="submit" class="btn btn-primary">Enviar Código por Correo</button>
-      </form>
-      <div style="text-align:center;">
-        <button type="button" class="btn-link" id="btn-already-have-code">Ya tengo un código de verificación</button>
-      </div>
-    </div>
-
-    <div id="forgot-step-2" class="stack-md hidden">
-      <p class="item-meta">Ingresá el código recibido por correo y definí tu nueva contraseña.</p>
-      <form id="confirm-reset-form" class="stack-md">
-        <div class="field">
-          <label>Usuario o Correo Electrónico</label>
-          <input id="confirm-identifier" type="text" required />
-        </div>
-        <div class="row-gap">
-          <div class="field">
-            <label>Código (6 dígitos)</label>
-            <input id="confirm-code" type="text" maxlength="6" pattern="[0-9]{6}" required placeholder="123456" />
-          </div>
-          <div class="field">
-            <label>Nueva Contraseña</label>
-            <input id="confirm-new-pass" type="password" minlength="4" required placeholder="Mínimo 4 caracteres" />
-          </div>
-        </div>
-        <button id="btn-apply-new-pass" type="submit" class="btn btn-success">Actualizar Contraseña</button>
-      </form>
-    </div>
-  `);
-
-  const showStep2 = (ident = '') => {
-    document.getElementById('forgot-step-1').classList.add('hidden');
-    document.getElementById('forgot-step-2').classList.remove('hidden');
-    if (ident) document.getElementById('confirm-identifier').value = ident;
-  };
-
-  document.getElementById('btn-already-have-code').addEventListener('click', () => {
-    showStep2(document.getElementById('reset-identifier').value.trim());
-  });
-
-  document.getElementById('request-reset-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const btn = document.getElementById('btn-send-reset-code');
-    const ident = document.getElementById('reset-identifier').value.trim();
-    btn.disabled = true;
-    try {
-      const res = await apiPost('requestPasswordReset', { identifier: ident }, { blockerText: 'Enviando código...' });
-      showToast(res.message || 'Si la cuenta posee correo registrado, se envió un código.', 'success');
-      showStep2(ident);
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  document.getElementById('confirm-reset-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const btn = document.getElementById('btn-apply-new-pass');
-    btn.disabled = true;
-    try {
-      await apiPost('resetPasswordWithCode', {
-        identifier: document.getElementById('confirm-identifier').value.trim(),
-        code: document.getElementById('confirm-code').value.trim(),
-        newPassword: document.getElementById('confirm-new-pass').value
-      }, { blockerText: 'Actualizando contraseña...' });
-      closeModal();
-      showToast('Contraseña actualizada. Ya podés iniciar sesión.', 'success');
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      btn.disabled = false;
-    }
-  });
+  const msg = getRecoveryMessage(state.cache.config);
+  openModal(
+    'Recuperar Contraseña',
+    `<p style="margin:0; font-size:15px; line-height:1.5;">${escapeHtml(msg)}</p>`,
+    { translucent: true }
+  );
 }
 
 function logout() {
@@ -323,6 +303,7 @@ async function enterApp() {
   state.cache.classrooms = boot.classrooms || [];
   state.cache.subjects = boot.subjects || [];
   state.cache.assignments = boot.assignments || [];
+  persistBranding(state.cache.config);
   applyBrandingUI(state.cache.config);
 
   const isClosed = String(state.cache.config.Plataforma_Cerrada || 'NO').toUpperCase() === 'SI';
@@ -343,6 +324,9 @@ function switchTab(tabName) {
   state.activeTab = tabName;
   state.reportPage = 1;
   state.studentPage = 1;
+  if (tabName !== 'chapero') {
+    state.selectedChaperoAulaId = '';
+  }
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
@@ -384,6 +368,7 @@ async function renderCurrentTab() {
       case 'asignaciones': return await renderAssignmentsTab(main);
       case 'aulas': return await renderClassroomsTab(main);
       case 'materias': return await renderSubjectsTab(main);
+      case 'chapero': return await renderChaperoTab(main);
       case 'prof-notas': return await renderGradesTab(main);
       case 'prof-password': return renderProfessorChangePasswordTab(main);
       case 'reportes': return await renderReportsTab(main);
@@ -407,9 +392,10 @@ function renderAdminHomeTab(main) {
     { tab: 'asignaciones', title: '4. Asignaciones', desc: 'Vincular profesor, aula y materia' },
     { tab: 'aulas', title: '5. Aulas', desc: 'Gestión de divisiones y especialidades' },
     { tab: 'materias', title: '6. Materias', desc: 'Asignaturas, régimen, promoción y especialidades' },
+    { tab: 'chapero', title: 'Chapero', desc: 'Horarios semanales por aula y exportación PDF' },
     { tab: 'prof-notas', title: 'Carga de Calificaciones', desc: 'Cargar notas por aula y materia y exportar planillas' },
     { tab: 'reportes', title: '7. Reportes', desc: 'Promocionales, mérito, dragoneantes, faltantes y bajas' },
-    { tab: 'config', title: '8. Configuración', desc: 'Escudo, marca, exportar año y blanqueo anual' }
+    { tab: 'config', title: '8. Configuración', desc: 'Escudo, horarios, recuperación, exportar año y blanqueo' }
   ];
 
   main.innerHTML = `
@@ -599,7 +585,7 @@ function openUserForm(user) {
           <input name="Usuario" required value="${escapeAttr(user ? user.Usuario : '')}" />
         </div>
         <div class="field">
-          <label>Correo Electrónico (recuperación)</label>
+          <label>Correo Electrónico</label>
           <input name="Email" type="email" value="${escapeAttr(user ? (user.Email || '') : '')}" placeholder="profesor@institucion.edu.ar" />
         </div>
       </div>
@@ -794,7 +780,7 @@ function openProfessorDesignationsModal(prof, desigs) {
 }
 
 /* =========================================================================
- * 3. ALUMNOS (FILTRO ALTA/BAJA + BLOQUEO CALIFICACIÓN EN BAJA + PAGINACIÓN)
+ * 3. ALUMNOS
  * ========================================================================= */
 
 async function renderStudentsTab(main) {
@@ -1480,7 +1466,326 @@ function openSubjectForm(mat) {
 }
 
 /* =========================================================================
- * CARGA DE CALIFICACIONES (EXCLUYE BAJAS + BLOQUEA SI ES BAJA + PLANILLA AULA)
+ * CHAPERO (HORARIOS POR AULA DE LUNES A VIERNES + EXPORTACIÓN PDF)
+ * ========================================================================= */
+
+function getHoursConfig(cfg = {}) {
+  const count = Math.min(12, Math.max(1, parseInt(cfg.Horas_Por_Dia || '6', 10) || 6));
+  const hours = [];
+  for (let i = 1; i <= count; i++) {
+    hours.push({
+      numero: i,
+      horario: String(cfg['Horario_Hora_' + i] || '').trim()
+    });
+  }
+  return { count, hours };
+}
+
+async function renderChaperoTab(main) {
+  const [classrooms, subjects, assignments, users, cfg] = await Promise.all([
+    apiPost('listClassrooms', {}, { block: false }),
+    apiPost('listSubjects', {}, { block: false }),
+    apiPost('listAssignments', {}, { block: false }),
+    apiPost('listUsers', {}, { block: false }),
+    apiPost('getConfig', {}, { block: false })
+  ]);
+
+  state.cache.classrooms = classrooms;
+  state.cache.subjects = subjects;
+  state.cache.assignments = assignments;
+  state.cache.users = users;
+  state.cache.config = cfg;
+
+  const activeClassrooms = classrooms.filter(c => String(c.Activa || 'SI').toUpperCase() === 'SI');
+
+  if (!state.selectedChaperoAulaId) {
+    main.innerHTML = `
+      <div class="stack-md">
+        ${renderSectionHeader('Chapero · Selección de Aula')}
+        <div class="card">
+          <div class="item-meta">Seleccioná un aula para visualizar o editar su grilla horaria de lunes a viernes.</div>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px;">
+          ${activeClassrooms.map(c => `
+            <button type="button" class="card stack-sm home-card-btn" data-chapero-aula="${escapeAttr(c.ID_Aula)}">
+              <div class="item-title">Aula ${escapeHtml(c.Nombre_Aula)}</div>
+              <div class="item-meta">${escapeHtml(c.Especialidad)}</div>
+            </button>
+          `).join('') || '<div class="card">No hay aulas activas cargadas.</div>'}
+        </div>
+      </div>
+    `;
+
+    bindBackToHomeButtons(main);
+    main.querySelectorAll('[data-chapero-aula]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.selectedChaperoAulaId = btn.dataset.chaperoAula;
+        renderCurrentTab();
+      });
+    });
+    return;
+  }
+
+  const aula = classrooms.find(c => c.ID_Aula === state.selectedChaperoAulaId);
+  if (!aula) {
+    state.selectedChaperoAulaId = '';
+    return renderChaperoTab(main);
+  }
+
+  const slots = await apiPost('getChaperoForAula', { ID_Aula: aula.ID_Aula }, { blockerText: 'Cargando horarios del aula...' });
+  const slotMap = {};
+  (slots || []).forEach(s => {
+    slotMap[`${s.Dia}::${s.Hora}`] = s.ID_Materia;
+  });
+
+  const esp = aula.Especialidad;
+  const eligibleSubjects = subjects
+    .filter(m => String(m.Activa || 'SI').toUpperCase() === 'SI' && (!esp || String(m[esp] || 'SI').toUpperCase() === 'SI'))
+    .sort((a, b) => String(a.Nombre_Materia || '').localeCompare(String(b.Nombre_Materia || ''), 'es'));
+
+  const userMap = {};
+  users.forEach(u => { userMap[u.LP] = u; });
+
+  const profBySubject = {};
+  assignments
+    .filter(a => a.ID_Aula === aula.ID_Aula)
+    .forEach(a => {
+      const p = userMap[a.LP_Profesor];
+      if (p) profBySubject[a.ID_Materia] = p.Apellido;
+    });
+
+  const { count, hours } = getHoursConfig(cfg);
+
+  main.innerHTML = `
+    <div class="stack-md">
+      ${renderSectionHeader(`Chapero · Aula ${aula.Nombre_Aula} (${aula.Especialidad})`, {
+        backAction: true,
+        backId: 'btn-back-chapero-aulas',
+        backLabel: 'Volver a Aulas'
+      })}
+
+      <div class="card row-gap" style="justify-content:space-between;">
+        <div class="item-meta">
+          <strong>${count}</strong> horas diarias configuradas · Especialidad: <strong>${escapeHtml(aula.Especialidad)}</strong>
+        </div>
+        <div class="row-gap">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-export-chapero-pdf">Exportar PDF</button>
+          <button type="button" class="btn btn-success btn-sm" id="btn-save-chapero">Guardar Horarios</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hora / Horario</th>
+                ${CHAPERO_DAYS.map(d => `<th>${escapeHtml(d)}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${hours.map(h => `
+                <tr>
+                  <td>
+                    <div><strong>${h.numero}ª Hora</strong></div>
+                    ${h.horario ? `<div class="item-meta">${escapeHtml(h.horario)}</div>` : ''}
+                  </td>
+                  ${CHAPERO_DAYS.map(dia => {
+                    const selectedMatId = slotMap[`${dia}::${h.numero}`] || '';
+                    const profApellido = selectedMatId && profBySubject[selectedMatId] ? profBySubject[selectedMatId] : '';
+                    return `
+                      <td>
+                        <select class="chapero-select" data-dia="${escapeAttr(dia)}" data-hora="${h.numero}">
+                          <option value="">-- Libre --</option>
+                          ${eligibleSubjects.map(m => `
+                            <option value="${escapeAttr(m.ID_Materia)}" ${selectedMatId === m.ID_Materia ? 'selected' : ''}>
+                              ${escapeHtml(m.Nombre_Materia)}
+                            </option>
+                          `).join('')}
+                        </select>
+                        <div class="chapero-prof-hint">${profApellido ? `Prof. ${escapeHtml(profApellido)}` : (selectedMatId ? 'Sin profesor asignado' : '')}</div>
+                      </td>
+                    `;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('btn-back-chapero-aulas').addEventListener('click', () => {
+    state.selectedChaperoAulaId = '';
+    renderCurrentTab();
+  });
+
+  main.querySelectorAll('.chapero-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const matId = sel.value;
+      const hint = sel.parentElement.querySelector('.chapero-prof-hint');
+      if (!hint) return;
+      if (!matId) {
+        hint.textContent = '';
+      } else if (profBySubject[matId]) {
+        hint.textContent = `Prof. ${profBySubject[matId]}`;
+      } else {
+        hint.textContent = 'Sin profesor asignado';
+      }
+    });
+  });
+
+  document.getElementById('btn-save-chapero').addEventListener('click', async () => {
+    const saveBtn = document.getElementById('btn-save-chapero');
+    saveBtn.disabled = true;
+    const gridSlots = [];
+    main.querySelectorAll('.chapero-select').forEach(sel => {
+      if (sel.value) {
+        gridSlots.push({
+          Dia: sel.dataset.dia,
+          Hora: Number(sel.dataset.hora),
+          ID_Materia: sel.value
+        });
+      }
+    });
+
+    try {
+      await apiPost('saveChaperoForAula', { ID_Aula: aula.ID_Aula, slots: gridSlots }, { blockerText: 'Guardando chapero...' });
+      showToast('Horarios del aula guardados.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('btn-export-chapero-pdf').addEventListener('click', () => {
+    const matMap = {};
+    eligibleSubjects.forEach(m => { matMap[m.ID_Materia] = m.Nombre_Materia; });
+
+    const currentGrid = {};
+    main.querySelectorAll('.chapero-select').forEach(sel => {
+      currentGrid[`${sel.dataset.dia}::${sel.dataset.hora}`] = sel.value;
+    });
+
+    exportChaperoPdf(aula, hours, currentGrid, matMap, profBySubject, cfg);
+  });
+}
+
+function exportChaperoPdf(aula, hours, currentGrid, matMap, profBySubject, cfg) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('Permití las ventanas emergentes para exportar a PDF.', 'error');
+    return;
+  }
+
+  const inst = getInstitutionName(cfg);
+  const ciclo = cfg.Ciclo_Lectivo || '';
+  const escudo = String(cfg.Escudo || '').trim();
+  const issuedAt = formatNowDateTime();
+
+  const bodyRows = hours.map(h => {
+    const cells = CHAPERO_DAYS.map(dia => {
+      const matId = currentGrid[`${dia}::${h.numero}`] || '';
+      if (!matId) return '<td class="empty-cell">—</td>';
+      const matName = matMap[matId] || matId;
+      const profApe = profBySubject[matId] || '';
+      return `
+        <td>
+          <div class="mat-name">${escapeHtml(matName)}</div>
+          ${profApe ? `<div class="prof-name">${escapeHtml(profApe)}</div>` : ''}
+        </td>
+      `;
+    }).join('');
+
+    return `
+      <tr>
+        <td class="hora-col">
+          <strong>${h.numero}ª Hora</strong>
+          ${h.horario ? `<div class="hora-range">${escapeHtml(h.horario)}</div>` : ''}
+        </td>
+        ${cells}
+      </tr>
+    `;
+  }).join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Chapero · Aula ${escapeHtml(aula.Nombre_Aula)}</title>
+      <style>
+        @page { size: A4 landscape; margin: 10mm; }
+        body { font-family: Arial, sans-serif; margin: 0; color: #0f172a; font-size: 11px; }
+        .doc-header {
+          border-bottom: 2px solid #0f172a;
+          padding-bottom: 8px;
+          margin-bottom: 8px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .doc-escudo { width: 42px; height: 42px; object-fit: contain; }
+        .doc-inst { font-size: 15px; font-weight: bold; }
+        .doc-sub { font-size: 10px; color: #475569; margin-top: 2px; }
+        .aula-banner {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: space-between;
+          gap: 12px;
+          background: #f1f5f9;
+          border: 1px solid #cbd5e1;
+          border-radius: 4px;
+          padding: 6px 10px;
+          margin-bottom: 10px;
+          font-size: 11px;
+        }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid #64748b; padding: 6px 7px; vertical-align: middle; text-align: center; word-wrap: break-word; }
+        th { background: #e2e8f0; font-size: 11px; }
+        .hora-col { width: 14%; background: #f8fafc; }
+        .hora-range { font-size: 9.5px; color: #334155; margin-top: 2px; }
+        .mat-name { font-weight: bold; font-size: 10.5px; }
+        .prof-name { font-size: 9.5px; color: #334155; margin-top: 2px; }
+        .empty-cell { color: #94a3b8; }
+      </style>
+    </head>
+    <body>
+      <div class="doc-header">
+        ${escudo ? `<img class="doc-escudo" src="${escudo}" alt="Escudo" />` : ''}
+        <div>
+          <div class="doc-inst">${escapeHtml(inst)}</div>
+          <div class="doc-sub">${ciclo ? `Ciclo Lectivo ${escapeHtml(ciclo)} · ` : ''}Emitido: ${escapeHtml(issuedAt)}</div>
+        </div>
+      </div>
+      <div class="aula-banner">
+        <div><strong>Chapero Semanal</strong></div>
+        <div><strong>Aula:</strong> ${escapeHtml(aula.Nombre_Aula)}</div>
+        <div><strong>Especialidad:</strong> ${escapeHtml(aula.Especialidad)}</div>
+        <div><strong>Carga horaria:</strong> ${hours.length} horas diarias</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th class="hora-col">Horario</th>
+            ${CHAPERO_DAYS.map(d => `<th>${escapeHtml(d)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${bodyRows}
+        </tbody>
+      </table>
+      <script>window.onload = function() { window.print(); };<\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
+/* =========================================================================
+ * CARGA DE CALIFICACIONES
  * ========================================================================= */
 
 function round3Client(num) {
@@ -1933,7 +2238,7 @@ function exportAulaSinglePagePdf(container, rows, subjectObj, cfg, meta, idAula,
 }
 
 /* =========================================================================
- * 7. REPORTES (INCLUYE BAJAS + PAGINACIÓN 30/PÁG EN PANTALLA E IMPRESIÓN)
+ * 7. REPORTES
  * ========================================================================= */
 
 async function renderReportsTab(main) {
@@ -2197,7 +2502,7 @@ function bindExportButtons(fileBaseName, reportTitle, headers, rows) {
 }
 
 /* =========================================================================
- * 8. CONFIGURACIÓN (ESCUDO VALIDADO + COMPRIMIDO), EXPORTAR AÑO Y BLANQUEO
+ * 8. CONFIGURACIÓN (ESCUDO, HORARIOS CHAPERO, RECUPERACIÓN, EXPORTAR Y BLANQUEO)
  * ========================================================================= */
 
 function estimateBase64Bytes(dataUrl) {
@@ -2276,14 +2581,30 @@ function compressShieldFile(file) {
 async function renderConfigTab(main) {
   const cfg = await apiPost('getConfig', {}, { blockerText: 'Cargando configuración...' });
   state.cache.config = cfg;
+  persistBranding(cfg);
   applyBrandingUI(cfg);
 
   let currentShield = String(cfg.Escudo || '').trim();
   let shieldRemoved = false;
+  const { count: initialHoursCount } = getHoursConfig(cfg);
+
+  const renderHoursFieldsHtml = (numHours, sourceCfg) => {
+    const list = [];
+    for (let i = 1; i <= numHours; i++) {
+      const val = String(sourceCfg['Horario_Hora_' + i] || '').trim();
+      list.push(`
+        <div class="field" style="min-width:170px;">
+          <label>Horario ${i}ª Hora</label>
+          <input name="Horario_Hora_${i}" value="${escapeAttr(val)}" placeholder="Ej. 07:30 - 08:15" />
+        </div>
+      `);
+    }
+    return list.join('');
+  };
 
   main.innerHTML = `
     <div class="stack-md">
-      ${renderSectionHeader('8. Configuración, Exportación y Blanqueo')}
+      ${renderSectionHeader('8. Configuración, Horarios, Exportación y Blanqueo')}
       <form id="config-form" class="card stack-md">
         <div class="card-title">Parámetros Globales e Identidad Institucional</div>
         <div class="field">
@@ -2310,6 +2631,22 @@ async function renderConfigTab(main) {
         <div class="field">
           <label>Nombre_Instituto (máx. 80 caracteres)</label>
           <input name="Nombre_Instituto" maxlength="80" value="${escapeAttr(getInstitutionName(cfg))}" />
+        </div>
+
+        <div class="field">
+          <label>Mensaje de Recuperación de Contraseña (popup en Login)</label>
+          <textarea name="Mensaje_Recuperacion" rows="2">${escapeHtml(getRecoveryMessage(cfg))}</textarea>
+        </div>
+
+        <div class="card stack-md" style="background:var(--bg);">
+          <div class="card-title" style="margin:0;">Horarios del Chapero</div>
+          <div class="field" style="max-width:220px;">
+            <label for="cfg-horas-dia">Cantidad de horas por día</label>
+            <input id="cfg-horas-dia" name="Horas_Por_Dia" type="number" min="1" max="12" value="${initialHoursCount}" />
+          </div>
+          <div id="cfg-horarios-list" class="row-gap">
+            ${renderHoursFieldsHtml(initialHoursCount, cfg)}
+          </div>
         </div>
 
         <div class="field">
@@ -2352,7 +2689,7 @@ async function renderConfigTab(main) {
 
       <div class="card stack-md" style="border-color: var(--danger)">
         <div class="card-title" style="color: #fca5a5">Blanqueo Anual de Ciclo</div>
-        <p class="item-meta">Borra todos los registros de <strong>Alumnos</strong> y <strong>Calificaciones</strong>, conservando Usuarios, Aulas, Materias, Asignaciones y Configuración.</p>
+        <p class="item-meta">Borra todos los registros de <strong>Alumnos</strong> y <strong>Calificaciones</strong>, conservando Usuarios, Aulas, Materias, Asignaciones, Chapero y Configuración.</p>
         <div class="field">
           <label>Escribí <strong>BLANQUEAR</strong> para confirmar</label>
           <input id="blanqueo-confirm" type="text" placeholder="BLANQUEAR" />
@@ -2363,6 +2700,17 @@ async function renderConfigTab(main) {
   `;
 
   bindBackToHomeButtons(main);
+
+  const horasDiaInput = document.getElementById('cfg-horas-dia');
+  const horariosListWrap = document.getElementById('cfg-horarios-list');
+  horasDiaInput.addEventListener('input', () => {
+    const nextCount = Math.min(12, Math.max(1, parseInt(horasDiaInput.value || '1', 10) || 1));
+    const snapshot = Object.assign({}, cfg);
+    horariosListWrap.querySelectorAll('input').forEach(inp => {
+      snapshot[inp.name] = inp.value;
+    });
+    horariosListWrap.innerHTML = renderHoursFieldsHtml(nextCount, snapshot);
+  });
 
   const fileInp = document.getElementById('shield-file-input');
   const prevImg = document.getElementById('shield-preview-img');
@@ -2400,12 +2748,15 @@ async function renderConfigTab(main) {
     saveBtn.disabled = true;
     const rawForm = Object.fromEntries(new FormData(e.target).entries());
     rawForm.Nombre_Instituto = String(rawForm.Nombre_Instituto || '').trim().slice(0, 80);
+    rawForm.Mensaje_Recuperacion = String(rawForm.Mensaje_Recuperacion || '').trim() || DEFAULT_RECOVERY_MSG;
+    rawForm.Horas_Por_Dia = String(Math.min(12, Math.max(1, parseInt(rawForm.Horas_Por_Dia || '6', 10) || 6)));
     rawForm.Escudo = currentShield;
     rawForm.borrarEscudo = shieldRemoved;
 
     try {
       const updated = await apiPost('saveConfig', { config: rawForm }, { blockerText: 'Guardando configuración...' });
       state.cache.config = updated;
+      persistBranding(updated);
       applyBrandingUI(updated);
       showToast('Configuración actualizada.', 'success');
       renderCurrentTab();
